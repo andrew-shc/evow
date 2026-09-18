@@ -27,11 +27,15 @@
 - Unlike `ASSETS/`, `CONFIGS/` is **tracked in git**, not ignored.
 
 ## Build environment
-TBD
+- Use the Conda environment `evow` (Python 3.11) for this project's Python commands, tests, and tooling.
+- Create it on a machine where it is absent with `conda create -n evow python=3.11`.
+- Activate it for interactive work with `conda activate evow`. If the shell has not initialized Conda, source the Conda installation's `etc/profile.d/conda.sh` first.
+- Use `conda run -n evow <command>` for non-interactive commands.
+- Install the replay application dependencies from `CONFIGS/replay_requirements.txt`. Install CUDA PyTorch and torchvision from the official PyTorch wheel index first; `GREENFIELD/replay/README.md` has the run command.
 
 ## Our code (GREENFIELD/) and set-aside code (OLD/)
 - `./GREENFIELD/` is the home for all newly-written code that's ours — think of it as `src/` for this repo. Code here is free to call into sibling vendored folders (e.g. drive `TensoSDF/run_training.py` from a `GREENFIELD/` script); the boundary is about ownership, not a hard sandbox.
-- `GREENFIELD/AGENTS.md` is special: it describes the research idea and high-level domain-specific intent of the project, not just directory bookkeeping. Subdirectories under `GREENFIELD/` still get their own regular per-directory `AGENTS.md` (purpose + gotchas) as they're created.
+- `GREENFIELD/AGENTS.md` is special: it describes the camera application's purpose and high-level domain-specific intent, not just directory bookkeeping. Subdirectories under `GREENFIELD/` still get their own regular per-directory `AGENTS.md` (purpose + gotchas) as they're created.
 - `./OLD/` is a reference cabinet for our own code that's no longer in active use but might be useful again later. When you set something aside instead of deleting it, move it here rather than leaving it cluttering the main tree or silently deleting it.
 
 ## Pushing this repo

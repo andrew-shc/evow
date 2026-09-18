@@ -1,0 +1,10 @@
+# Short-clip settings for local-network 4D replay.
+capture:
+  fps: 12
+  max_side: 576
+  default_frames: 13
+model:
+  anyview_steps: 20
+  depth_input_size: 392
+  gaussian_stride: 6
+  gaussian_steps: 260

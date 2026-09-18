@@ -1,0 +1,15 @@
+# Install torch 2.7.1 and torchvision 0.22.1 from the PyTorch CUDA 12.6 index first.
+gradio==5.50.0
+numpy<2
+opencv-python-headless<4.12
+trimesh>=4.0
+imageio>=2.34
+imageio-ffmpeg>=0.5
+pillow>=10
+pyyaml>=6
+python-dotenv>=1
+einops>=0.8
+easydict>=1.13
+tqdm>=4.66
+lpips>=0.1.4
+gsplat==1.5.3
