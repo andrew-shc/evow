@@ -65,7 +65,10 @@ def _state(index: int, steps: tuple[Step, ...], latest: dict[str, dict[str, Any]
         return "complete"
     event = _event(steps[index], latest)
     if event:
-        return str(event.get("status", "waiting"))
+        # Trace producers historically called terminal failures "error". Keep
+        # that wire format, but present one stable user-facing state everywhere.
+        status = str(event.get("status", "waiting"))
+        return "failed" if status == "error" else status
     return "complete" if any(_event(later, latest) for later in steps[index + 1:]) else "waiting"
 
 
@@ -76,6 +79,34 @@ def _stage_duration(step: Step, events: list[dict[str, Any]], event: dict[str, A
     matching = [entry for entry in events if entry.get("stage") in step.trace_stages]
     started = float(matching[0].get("elapsed_seconds", 0)) if matching else 0.0
     return f"{max(0.0, float(event.get('elapsed_seconds', 0)) - started):.2f}s"
+
+
+STATUS_LABELS = {
+    "complete": "Completed",
+    "running": "Running",
+    "waiting": "Waiting",
+    "failed": "Failed",
+}
+
+
+def workflow_header(trace: dict[str, Any], index: int) -> tuple[str, str]:
+    """Return the visible label and semantic CSS class for one accordion.
+
+    Accordion content is never replaced to communicate status. Gradio updates
+    only these header properties, preserving whether the user has it open.
+    """
+    mode = str(trace.get("mode", "explicit"))
+    steps = _steps(mode)
+    events = list(trace.get("events", []))
+    latest = _latest(events)
+    step = steps[index]
+    state = _state(index, steps, latest)
+    duration = _stage_duration(step, events, _event(step, latest))
+    label = STATUS_LABELS.get(state, "Waiting")
+    return (
+        f"{index + 1}. {step.name} · {label} · {duration}",
+        f"evow-stage-{state}",
+    )
 
 
 def _preview(trace: dict[str, Any], event: dict[str, Any] | None) -> str:

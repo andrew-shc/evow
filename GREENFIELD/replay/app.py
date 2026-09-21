@@ -13,7 +13,7 @@ import gradio as gr
 
 from .run import execute_run, list_saved_runs, load_saved_run
 from .splat_viewer import empty_splat_html, splat_html
-from .workflow import workflow_card_html, workflow_labels
+from .workflow import workflow_card_html, workflow_header
 
 
 SAMPLE_VIDEO = settings.assets / "replay" / "samples" / "trees_swaying_pexels_12644693.mp4"
@@ -59,7 +59,8 @@ def _display(state: dict):
         gr.update(value=state["video"], visible=True)
         if state["video"] else gr.update()
     )
-    workflow_updates = _workflow_cards(state["trace"])
+    workflow_header_updates = _workflow_header_updates(state["trace"])
+    workflow_card_updates = _workflow_cards(state["trace"])
     splat_update = (
         gr.update(value=splat_html(models), visible=True)
         if is_splat else
@@ -72,7 +73,7 @@ def _display(state: dict):
                   visible=bool(models) and not is_splat),
         splat_update,
         gr.update(visible=bool(models) and not is_splat, maximum=max(0, len(models) - 1), value=0),
-        models, *workflow_updates, state["run_id"],
+        models, *workflow_header_updates, *workflow_card_updates, state["run_id"],
         (gr.update(choices=list_saved_runs(), value=state["run_id"])
          if state["video"] else gr.update()),
         state["trace"]["mode"],
@@ -125,16 +126,25 @@ def _workflow_cards(trace: dict) -> tuple[str, ...]:
     return tuple(workflow_card_html(trace, index) for index in range(7))
 
 
+def _workflow_header_updates(trace: dict) -> tuple[dict, ...]:
+    """Refresh headers only, preserving each stage accordion's open state."""
+    return tuple(
+        gr.update(label=label, elem_classes=["evow-stage", state_class])
+        for index in range(7)
+        for label, state_class in [workflow_header(trace, index)]
+    )
+
+
 def _empty_workflow_cards(mode: str) -> tuple[str, ...]:
     """Render the selected method before its run begins."""
     return _workflow_cards({"mode": "explicit" if mode == "mesh" else mode, "events": []})
 
 
 def _method_change(mode: str):
-    """Retitle persistent workflow cards and reserve the explicit 3D panel."""
+    """Refresh stage headers/details for a method and reserve its 3D panel."""
     selected = "explicit" if mode == "mesh" else mode
     is_explicit = mode in {"explicit", "mesh"}
-    return (*(gr.update(label=label) for label in workflow_labels(selected)),
+    return (*_workflow_header_updates({"mode": selected, "events": []}),
             *_empty_workflow_cards(mode),
             gr.update(value=empty_splat_html() if is_explicit else "", visible=is_explicit))
 
@@ -191,15 +201,16 @@ def build_app() -> gr.Blocks:
                 workflow_headers = []
                 workflow_cards = []
                 with gr.Accordion("", open=False, elem_classes="internal-flow") as internals:
-                    for label, value in zip(workflow_labels("explicit"), _empty_workflow_cards("explicit")):
-                        with gr.Accordion(label, open=False) as workflow_header:
-                            workflow_headers.append(workflow_header)
+                    for index, value in enumerate(_empty_workflow_cards("explicit")):
+                        label, state_class = workflow_header({"mode": "explicit", "events": []}, index)
+                        with gr.Accordion(label, open=False, elem_classes=["evow-stage", state_class]) as workflow_header_component:
+                            workflow_headers.append(workflow_header_component)
                             workflow_cards.append(gr.HTML(value=value))
 
         model_paths = gr.State([])
         run_id = gr.State("")
         outputs = [
-            sampled, output, model, splat_viewer, mesh_index, model_paths, *workflow_cards, run_id, saved, mode,
+            sampled, output, model, splat_viewer, mesh_index, model_paths, *workflow_headers, *workflow_cards, run_id, saved, mode,
         ]
         sample_button.click(_included_sample, None, source)
         mode.change(

@@ -81,6 +81,9 @@ def execute_run(
         },
     )
 
+    # This is updated before every backend event. If an operation raises, the
+    # trace can mark the stage users saw running rather than only a generic run.
+    active_stage = "Input clip"
     try:
         frames = extract_clip(video_path, start_seconds, frame_count, settings, run_dir)
         trace.update_request({"stationary_view_assumed": True})
@@ -107,6 +110,7 @@ def execute_run(
                 break
             workflow_changed = False
             if update.get("record", True):
+                active_stage = update["stage"]
                 trace.add(
                     update["stage"], update["status"], update["detail"],
                     update.get("preview"), update.get("metrics"),
@@ -118,6 +122,8 @@ def execute_run(
                 run_dir, trace, update["detail"], workflow_changed=workflow_changed,
             )
 
+        # Saving the final manifest is itself the last visible workflow stage.
+        active_stage = "Run complete"
         video = Path(result["video"])
         models = list(result["models"])
         (run_dir / "result.json").write_text(json.dumps({
@@ -128,6 +134,9 @@ def execute_run(
         trace.add("Run complete", "complete", "The result and stage trace are saved.")
         yield _snapshot(run_dir, trace, "Run complete.", video, models)
     except Exception as error:
+        # Preserve the generic terminal record for tooling while giving the UI a
+        # stage-specific failure that it can render in the appropriate band.
+        trace.add(active_stage, "error", str(error))
         trace.add("Run failed", "error", str(error))
         yield _snapshot(run_dir, trace, f"Run failed: {error}")
 
