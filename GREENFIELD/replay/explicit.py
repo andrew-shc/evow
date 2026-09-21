@@ -20,7 +20,7 @@ def _worker(command: list[str], log_path: Path, stage: str, detail: str, progres
         last_step = None
         yield {"stage": stage, "status": "running", "detail": detail}
         while process.poll() is None:
-            time.sleep(2)
+            time.sleep(0.05)
             progress = None
             if progress_path and progress_path.is_file():
                 try:
@@ -32,22 +32,21 @@ def _worker(command: list[str], log_path: Path, stage: str, detail: str, progres
                 yield {
                     "stage": stage, "status": "running",
                     "detail": f"Fitting 3D Gaussians · step {progress['step']}/{progress['total']} · image loss {progress['loss']}",
-                    "preview": Path(progress["preview"]),
+                    **({"preview": Path(progress["preview"])} if progress.get("preview") else {}),
                     "metrics": {"step": progress["step"], "image_loss": progress["loss"],
                                 "gaussians": progress["gaussians"]},
                 }
             else:
                 yield {
                     "stage": stage, "status": "running",
-                    "detail": f"{detail} · {int(time.monotonic() - started)}s elapsed",
-                    "record": False,
+                    "detail": f"{detail} · {time.monotonic() - started:.2f}s elapsed",
                 }
     if process.returncode:
         tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-15:])
         raise RuntimeError(f"{stage} failed. Log: {log_path}\n{tail}")
 
 
-def run_explicit(frames: np.ndarray, request: ViewRequest, run_dir: Path, settings: Settings):
+def run_explicit(frames: np.ndarray, request: ViewRequest, source_fov_degrees: float, run_dir: Path, settings: Settings):
     if not settings.depth_checkpoint.is_file():
         raise FileNotFoundError(f"Missing depth initializer weights: {settings.depth_checkpoint}")
     if not (settings.depth_repo / "video_depth_anything" / "video_depth.py").is_file():
@@ -74,8 +73,9 @@ def run_explicit(frames: np.ndarray, request: ViewRequest, run_dir: Path, settin
     command = [
         sys.executable, "-m", "GREENFIELD.replay.gaussian_worker",
         "--frames", str(run_dir / "frames.npy"), "--depths", str(depth_path),
-        "--out", str(output_dir), "--yaw", str(request.yaw_degrees),
-        "--shift", str(request.lateral_shift), "--fov", str(request.fov_degrees),
+        "--out", str(output_dir), "--render-yaw", str(request.yaw_degrees),
+        "--render-shift", str(request.lateral_shift), "--render-fov", str(request.fov_degrees),
+        "--source-fov", str(source_fov_degrees),
     ]
     yield from _worker(
         command, run_dir / "gaussian.log", "4D Gaussian fitting",

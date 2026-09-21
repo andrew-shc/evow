@@ -16,6 +16,7 @@ from .settings import Settings
 def prepare_episode(
     frames: np.ndarray,
     request: ViewRequest,
+    source_fov_degrees: float,
     run_dir: Path,
     settings: Settings,
 ) -> Path:
@@ -25,16 +26,16 @@ def prepare_episode(
     shutil.copyfile(run_dir / "source.mp4", episode / "rgb" / "cam1.mp4")
 
     count, height, width = frames.shape[:3]
-    camera_matrix = intrinsics(height, width, request.fov_degrees)
-    repeated_intrinsics = np.repeat(camera_matrix[None], count, axis=0)
+    source_intrinsics = np.repeat(intrinsics(height, width, source_fov_degrees)[None], count, axis=0)
+    target_intrinsics = np.repeat(intrinsics(height, width, request.fov_degrees)[None], count, axis=0)
     source_poses = np.repeat(np.eye(4, dtype=np.float32)[None], count, axis=0)
     target_poses = np.repeat(target_cam_to_world(request)[None], count, axis=0)
-    for camera, poses in (("cam1", source_poses), ("cam0", target_poses)):
+    for camera, poses, intrinsics_for_camera in (("cam1", source_poses, source_intrinsics), ("cam0", target_poses, target_intrinsics)):
         np.savez_compressed(
             episode / "lowdim" / f"{camera}.npz",
             camera=np.repeat(camera, count),
             timestep=np.arange(count, dtype=np.int64),
-            intrinsics=repeated_intrinsics,
+            intrinsics=intrinsics_for_camera,
             extrinsics=poses,
         )
 
@@ -59,6 +60,7 @@ def prepare_episode(
 def run_implicit(
     frames: np.ndarray,
     request: ViewRequest,
+    source_fov_degrees: float,
     run_dir: Path,
     settings: Settings,
 ):
@@ -73,7 +75,7 @@ def run_implicit(
     if not (settings.anyview_repo / "scripts" / "infer.py").is_file():
         raise FileNotFoundError("AnyView-DVS checkout is missing.")
 
-    episode = prepare_episode(frames, request, run_dir, settings)
+    episode = prepare_episode(frames, request, source_fov_degrees, run_dir, settings)
     yield {
         "stage": "Camera setup", "status": "complete",
         "detail": "Saved the fixed source camera and requested virtual camera.",
@@ -96,11 +98,10 @@ def run_implicit(
             "detail": "AnyView is generating the synchronized target-view clip.",
         }
         while process.poll() is None:
-            time.sleep(3)
+            time.sleep(0.05)
             yield {
                 "stage": "Video diffusion", "status": "running",
-                "detail": f"Generating target view · {int(time.monotonic() - started)}s elapsed",
-                "record": False,
+                "detail": f"Generating target view · {time.monotonic() - started:.2f}s elapsed",
             }
     if process.returncode:
         tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-12:])

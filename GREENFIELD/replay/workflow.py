@@ -69,6 +69,15 @@ def _state(index: int, steps: tuple[Step, ...], latest: dict[str, dict[str, Any]
     return "complete" if any(_event(later, latest) for later in steps[index + 1:]) else "waiting"
 
 
+def _stage_duration(step: Step, events: list[dict[str, Any]], event: dict[str, Any] | None) -> str:
+    """Show a stage's own elapsed time instead of the total run age."""
+    if event is None:
+        return "—"
+    matching = [entry for entry in events if entry.get("stage") in step.trace_stages]
+    started = float(matching[0].get("elapsed_seconds", 0)) if matching else 0.0
+    return f"{max(0.0, float(event.get('elapsed_seconds', 0)) - started):.2f}s"
+
+
 def _preview(trace: dict[str, Any], event: dict[str, Any] | None) -> str:
     """Embed a recorded stage preview from the local run directory when present."""
     if not event or not event.get("preview") or not trace.get("run_id"):
@@ -80,10 +89,46 @@ def _preview(trace: dict[str, Any], event: dict[str, Any] | None) -> str:
     return f'<img class="evow-preview" src="{escape(source, quote=True)}" alt="Recorded stage preview">'
 
 
+# Text fragments open the served source file at the function responsible for each stage.
+SOURCE_LOCATIONS = {
+    ("GREENFIELD/replay/app.py", "Choose source"): "def _run(",
+    ("GREENFIELD/replay/clip.py", "Extract episode"): "def extract_clip(",
+    ("GREENFIELD/replay/depth_worker.py", "Infer depth through time"): "def main()",
+    ("GREENFIELD/replay/gaussian_worker.py", "Initialize 3D Gaussians"): "def _initial_gaussians(",
+    ("GREENFIELD/replay/gaussian_worker.py", "Fit the 4D scene"): "def main()",
+    ("GREENFIELD/replay/gaussian_worker.py", "Render requested view"): "def main()",
+    ("GREENFIELD/replay/implicit.py", "Prepare camera episode"): "def prepare_episode(",
+    ("GREENFIELD/replay/anyview_worker.py", "Encode video and camera"): "def main()",
+    ("GREENFIELD/replay/anyview_worker.py", "Generate nearby video"): "def main()",
+    ("GREENFIELD/replay/anyview_worker.py", "Decode result"): "def main()",
+    ("GREENFIELD/replay/trace.py", "Save run"): "def add(",
+}
+
+
+def _source_location(step: Step) -> str:
+    """Return the source entry point associated with a displayed stage."""
+    return SOURCE_LOCATIONS[(step.source_file, step.name)]
+
+
+def _code_link(step: Step) -> str:
+    """Link a flow stage to its served local file and entry-point text fragment."""
+    return "/gradio_api/file=" + quote(str(load_settings().root / step.source_file), safe="/") + "#:~:text=" + quote(_source_location(step), safe="")
+
+
+def _source_line(step: Step) -> int:
+    """Find the current one-based line number for a workflow entry point."""
+    source_path = load_settings().root / step.source_file
+    for line_number, line in enumerate(source_path.read_text().splitlines(), 1):
+        if _source_location(step) in line:
+            return line_number
+    raise ValueError(f"Could not locate {_source_location(step)!r} in {step.source_file}.")
+
+
 def _program_contract(step: Step) -> str:
     """Serialize static implementation facts in a readable, copyable form."""
     return escape(json.dumps({
-        "source_file": step.source_file,
+        "source_file": f"{step.source_file}:{_source_line(step)}",
+        "source_location": _source_location(step),
         "function_chain": step.function_chain,
         "inputs": step.inputs,
         "outputs": step.outputs,
@@ -106,23 +151,49 @@ def workflow_html(trace: dict[str, Any]) -> str:
         if index == 0:
             runtime["run_request"] = trace.get("request", {})
         open_attribute = " open" if event and state in {"running", "error"} else ""
+        source_url = _code_link(step)
+        source_display = f"{step.source_file}:{_source_line(step)}"
+        duration = _stage_duration(step, list(trace.get("events", [])), event)
         cards.append(
             f'<details class="evow-step evow-{escape(state)}"{open_attribute}>'
             f'<summary><span class="evow-number">{index + 1}</span><span class="evow-name">{escape(step.name)}</span>'
-            f'<span class="evow-purpose">{escape(step.purpose)}</span><span class="evow-state">{escape(state)}</span></summary>'
+            f'<span class="evow-purpose">{escape(step.purpose)}</span><span class="evow-duration">{escape(duration)}</span></summary>'
             '<div class="evow-detail">'
             '<section><h4>Program</h4>'
-            f'<p><code>{escape(step.source_file)}</code></p><p><code>{escape(step.function_chain)}</code></p>'
+            f'<p><a class="evow-code-link" href="{escape(source_url, quote=True)}" target="_blank" rel="noopener">{escape(source_display)}</a></p><p><code>{escape(step.function_chain)}</code></p>'
             f'<pre>{_program_contract(step)}</pre></section>'
             '<section><h4>Live run record</h4>'
             f'<p>{escape(detail)}</p>{_preview(trace, event)}'
             f'<pre>{escape(json.dumps(runtime, indent=2))}</pre></section>'
             '</div></details>'
         )
-    method_name = "Explicit native 4D Gaussian scene" if mode == "explicit" else "Implicit video diffusion"
     return f'''<section class="evow-flow"><style>
-.evow-flow{{background:#fff;color:#17212b;border:1px solid #cbd5df;border-radius:10px;padding:18px;font:14px system-ui,sans-serif}}.evow-flow *{{box-sizing:border-box}}.evow-flow h3{{margin:0 0 7px;font-size:19px}}.evow-flow>p{{margin:0 0 14px;color:#344454;line-height:1.5}}.evow-legend{{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}}.evow-tag{{padding:6px 9px;border:1px solid #b9c8d5;border-radius:99px;background:#edf3f7;color:#243545;font-size:12px}}
-.evow-steps{{display:grid;gap:9px}}.evow-step{{border:1px solid #b7c5d0;border-radius:8px;background:#fff}}.evow-step summary{{display:grid;grid-template-columns:24px minmax(150px,1fr) minmax(180px,2fr) auto;align-items:center;gap:9px;cursor:pointer;padding:12px;list-style:none;font-weight:700}}.evow-step summary::-webkit-details-marker{{display:none}}.evow-number{{display:grid;place-items:center;width:23px;height:23px;border-radius:50%;background:#d9e7f0;font-size:12px}}.evow-purpose{{color:#526575;font-weight:400;font-size:12px}}.evow-state{{text-transform:capitalize;color:#425466;font-size:12px;font-weight:600}}
-.evow-detail{{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:13px;border-top:1px solid #d5dfe7;color:#253646;line-height:1.45}}.evow-detail section{{min-width:0}}.evow-detail h4{{margin:0 0 7px;font-size:12px;color:#425466;text-transform:uppercase;letter-spacing:.05em}}.evow-detail p{{margin:0 0 8px}}.evow-detail code{{color:#173f59;white-space:normal;overflow-wrap:anywhere;font-weight:600}}.evow-detail pre{{max-height:260px;margin:0;overflow:auto;padding:9px;border:1px solid #d5dfe7;border-radius:5px;background:#f6f9fb;color:#17212b;white-space:pre-wrap;font:12px ui-monospace,SFMono-Regular,monospace}}.evow-preview{{display:block;max-width:100%;max-height:260px;margin:0 0 9px;border:1px solid #c7d4de;border-radius:5px}}
+.evow-flow{{background:transparent;color:#17212b;border:0;border-radius:0;padding:4px 0;font:14px system-ui,sans-serif}}.evow-flow *{{box-sizing:border-box}}.evow-flow h3{{margin:0 0 7px;font-size:19px}}.evow-flow>p{{margin:0 0 14px;color:#344454;line-height:1.5}}.evow-legend{{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}}.evow-tag{{padding:6px 9px;border:1px solid #b9c8d5;border-radius:99px;background:#edf3f7;color:#243545;font-size:12px}}
+.evow-steps{{display:grid;gap:9px}}.evow-step{{border:1px solid #b7c5d0;border-radius:8px;background:#fff}}.evow-step summary{{display:grid;grid-template-columns:24px minmax(150px,1fr) minmax(180px,2fr) auto;align-items:center;gap:9px;cursor:pointer;padding:12px;list-style:none;font-weight:400}}.evow-step summary::-webkit-details-marker{{display:none}}.evow-number{{display:grid;place-items:center;width:23px;height:23px;border-radius:50%;background:#d9e7f0;font-size:12px}}.evow-purpose{{color:#526575;font-weight:400;font-size:12px}}.evow-duration{{color:#425466;font-size:12px;font-variant-numeric:tabular-nums}}.evow-name{{font-weight:400!important}}
+.evow-detail{{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:13px;border-top:1px solid #d5dfe7;color:#253646;line-height:1.45}}.evow-detail section{{min-width:0}}.evow-detail h4{{margin:0 0 7px;font-size:12px;color:#425466;text-transform:uppercase;letter-spacing:.05em}}.evow-detail p{{margin:0 0 8px}}.evow-detail code{{color:#173f59;white-space:normal;overflow-wrap:anywhere;font-weight:600}}.evow-detail pre{{max-height:260px;margin:0;overflow:auto;padding:9px;border:1px solid #d5dfe7;border-radius:5px;background:#f6f9fb;color:#17212b;white-space:pre-wrap;font:12px ui-monospace,SFMono-Regular,monospace}}.evow-code-link{{color:#0b5e96;text-decoration:underline;font:12px ui-monospace,SFMono-Regular,monospace}}.evow-preview{{display:block;max-width:100%;max-height:260px;margin:0 0 9px;border:1px solid #c7d4de;border-radius:5px}}
 .evow-complete{{border-left:5px solid #2c7a5e}}.evow-running{{border-left:5px solid #1677b8;background:#f0f8fd}}.evow-error{{border-left:5px solid #bd3d3d;background:#fff5f5}}.evow-waiting{{border-left:5px solid #a6b4c0;background:#f8fafb}}@media(max-width:760px){{.evow-step summary{{grid-template-columns:24px 1fr auto}}.evow-purpose{{grid-column:2/4}}.evow-detail{{grid-template-columns:1fr}}}}
-</style><h3>Internal execution flow</h3><p><b>Input source</b> → <b>short episode</b> → <b>{escape(method_name)}</b> → <b>nearby virtual view</b> → <b>saved run</b>. Open one stage for the program contract and its live record.</p><div class="evow-legend"><span class="evow-tag">Level 1: flow overview</span><span class="evow-tag">Level 2: program and run record</span><span class="evow-tag">Method: {escape(method_name)}</span></div><div class="evow-steps">{"".join(cards)}</div></section>'''
+</style><div class="evow-steps">{"".join(cards)}</div></section>'''
+
+
+def workflow_labels(mode: str) -> tuple[str, ...]:
+    """Return stable accordion labels for the selected execution path."""
+    return tuple(f"{index + 1}. {step.name}" for index, step in enumerate(_steps(mode)))
+
+
+def workflow_card_html(trace: dict[str, Any], index: int) -> str:
+    """Render one live record within a persistent Gradio accordion."""
+    mode = str(trace.get("mode", "explicit"))
+    steps = _steps(mode)
+    step = steps[index]
+    events = list(trace.get("events", []))
+    latest = _latest(events)
+    event = _event(step, latest)
+    state = _state(index, steps, latest)
+    detail = str(event.get("detail", "Waiting for this operation.")) if event else "Waiting for this operation."
+    runtime = {"status": state, "elapsed_seconds": event.get("elapsed_seconds", 0) if event else 0, "metrics": event.get("metrics") if event else None, "event": event or None}
+    if index == 0:
+        runtime["run_request"] = trace.get("request", {})
+    source_url = _code_link(step)
+    source_display = f"{step.source_file}:{_source_line(step)}"
+    duration = _stage_duration(step, events, event)
+    return f"""<article class=\"evow-stage-card evow-{escape(state)}\"><style>.evow-stage-card{{color:#253646;line-height:1.45}}.evow-stage-card *{{box-sizing:border-box}}.evow-stage-summary{{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:9px;align-items:center;margin:0 0 10px}}.evow-stage-number{{display:grid;place-items:center;width:23px;height:23px;border-radius:50%;background:#d9e7f0;font-size:12px}}.evow-stage-purpose{{margin:0 0 13px;color:#526575;font-size:12px}}.evow-stage-duration{{color:#425466;font-size:12px;font-variant-numeric:tabular-nums}}.evow-stage-detail{{display:grid;grid-template-columns:1fr 1fr;gap:14px}}.evow-stage-detail section{{min-width:0}}.evow-stage-detail h4{{margin:0 0 7px;font-size:12px;color:#425466;text-transform:uppercase;letter-spacing:.05em}}.evow-stage-detail p{{margin:0 0 8px}}.evow-stage-detail code{{color:#173f59;white-space:normal;overflow-wrap:anywhere;font-weight:600}}.evow-stage-detail pre{{max-height:260px;margin:0;overflow:auto;padding:9px;border:1px solid #d5dfe7;border-radius:5px;background:#f6f9fb;color:#17212b;white-space:pre-wrap;font:12px ui-monospace,SFMono-Regular,monospace}}.evow-code-link{{color:#0b5e96;text-decoration:underline;font:12px ui-monospace,SFMono-Regular,monospace}}.evow-preview{{display:block;max-width:100%;max-height:260px;margin:0 0 9px;border:1px solid #c7d4de;border-radius:5px}}</style><header class=\"evow-stage-summary\"><span class=\"evow-stage-number\">{index + 1}</span><strong>{escape(step.name)}</strong><span class=\"evow-stage-duration\">{escape(duration)}</span></header><p class=\"evow-stage-purpose\">{escape(step.purpose)}</p><div class=\"evow-stage-detail\"><section><h4>Program</h4><p><a class=\"evow-code-link\" href=\"{escape(source_url, quote=True)}\" target=\"_blank\" rel=\"noopener\">{escape(source_display)}</a></p><p><code>{escape(step.function_chain)}</code></p><pre>{_program_contract(step)}</pre></section><section><h4>Live run record</h4><p>{escape(detail)}</p>{_preview(trace, event)}<pre>{escape(json.dumps(runtime, indent=2))}</pre></section></div></article>"""

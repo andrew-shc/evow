@@ -52,6 +52,12 @@ def flow_html(title: str, mode: str, stages: list[tuple[str, str]]) -> str:
         f'<details><summary>{number}. {name}</summary><pre>{detail}</pre></details>'
         for number, (name, detail) in enumerate(stages, 1)
     )
-    return f'''<section style="background:#fff;color:#17212b;border:1px solid #cbd5df;border-radius:9px;padding:14px;font:14px system-ui">
-<h3 style="margin:0 0 6px">Internal execution flow · {title}</h3><p style="margin:0 0 10px;color:#425466">Mode: <b>{mode}</b>. Open a stage for its program path and current artifact.</p>
+    return f'''<section style="background:transparent;color:#17212b;border:0;border-radius:0;padding:4px 0;font:14px system-ui">
+
 {rows}</section>'''
+
+
+def guide_html(*steps: str) -> str:
+    """Render a quiet numbered route without decorative controls."""
+    labels = " → ".join(f"{index}. {step}" for index, step in enumerate(steps, 1))
+    return f'<div style="margin:0 0 12px;color:#425466;font:13px system-ui">{labels}</div>'

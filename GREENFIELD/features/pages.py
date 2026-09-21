@@ -28,16 +28,23 @@ def _future(video, mode, seconds):
 
 
 def build_future() -> gr.Blocks:
-    with gr.Blocks() as page:
-        gr.Markdown("# Future view\nCreate a possible continuation from the most recent camera episode.")
+    with gr.Blocks(css=".internal-flow button,.internal-flow summary{font-size:1.2rem!important;font-weight:700!important}.evow-media{border:2px solid #71869a!important;border-radius:10px!important;padding:6px!important;background:#f8fafc!important}") as page:
+        gr.Markdown("# Future View")
         with gr.Row():
-            video = gr.Video(label="Recent stationary-view episode")
+            gr.Markdown("## 1. Source")
+            video = gr.Video(label="Source", elem_classes="evow-media")
             with gr.Column():
-                mode = gr.Radio([("Implicit video path", "implicit"), ("Explicit scene-state path", "explicit")], value="implicit", label="Method")
-                seconds = gr.Slider(1, 30, value=5, step=1, label="Possible future duration (seconds)")
-                run = gr.Button("Generate possible future", variant="primary")
-        result = gr.Video(label="Possible future view")
-        flow = gr.HTML(value=flow_html("Future view", "implicit", [("Read recent episode", "Waiting for input."), ("Advance future", "Waiting."), ("Save result", "Waiting.")]))
+                gr.Markdown("## 2. Mode")
+                mode = gr.Radio([("Implicit video path", "implicit"), ("Explicit scene-state path", "explicit")], value="implicit", label="Mode")
+                gr.Markdown("## 3. Duration")
+                seconds = gr.Slider(1, 30, value=5, step=1, label="Seconds")
+                gr.Markdown("## 4. Generate")
+                run = gr.Button("Generate", variant="primary")
+        gr.Markdown("## 5. Output")
+        result = gr.Video(label="Result", elem_classes="evow-media")
+        gr.Markdown("## Internal Execution Flow")
+        with gr.Accordion("Show / hide", open=False, elem_classes="internal-flow"):
+            flow = gr.HTML(value=flow_html("Future view", "implicit", [("Read recent episode", "Waiting for input."), ("Advance future", "Waiting."), ("Save result", "Waiting.")]))
         run.click(_future, [video, mode, seconds], [result, flow])
     return page
 
@@ -56,16 +63,23 @@ def _select(video, query, mode):
 
 
 def build_selection() -> gr.Blocks:
-    with gr.Blocks() as page:
-        gr.Markdown("# Text Query\nFind candidate moments in a recorded camera episode.")
+    with gr.Blocks(css=".internal-flow button,.internal-flow summary{font-size:1.2rem!important;font-weight:700!important}.evow-media{border:2px solid #71869a!important;border-radius:10px!important;padding:6px!important;background:#f8fafc!important}") as page:
+        gr.Markdown("# Text Query")
         with gr.Row():
-            video = gr.Video(label="Recorded episode")
+            gr.Markdown("## 1. Source")
+            video = gr.Video(label="Video", elem_classes="evow-media")
             with gr.Column():
-                query = gr.Textbox(label="Describe a moment", placeholder="dark clouds above moving branches")
-                mode = gr.Radio([("Implicit video descriptors", "implicit"), ("Explicit scene-time descriptors", "explicit")], value="implicit", label="Method")
-                run = gr.Button("Search episode", variant="primary")
-        matches = gr.Dataframe(headers=["Start", "End", "Score", "Method"], label="Candidate intervals")
-        flow = gr.HTML(value=flow_html("Text selection", "implicit", [("Decode archive window", "Waiting."), ("Score query", "Waiting."), ("Rank intervals", "Waiting.")]))
+                gr.Markdown("## 2. Text")
+                query = gr.Textbox(label="Text", placeholder="dark clouds above moving branches")
+                gr.Markdown("## 3. Mode")
+                mode = gr.Radio([("Implicit video descriptors", "implicit"), ("Explicit scene-time descriptors", "explicit")], value="implicit", label="Mode")
+                gr.Markdown("## 4. Search")
+                run = gr.Button("Search", variant="primary")
+        gr.Markdown("## 5. Output")
+        matches = gr.Dataframe(headers=["Start", "End", "Score", "Method"], label="Matches")
+        gr.Markdown("## Internal Execution Flow")
+        with gr.Accordion("Show / hide", open=False, elem_classes="internal-flow"):
+            flow = gr.HTML(value=flow_html("Text selection", "implicit", [("Decode archive window", "Waiting."), ("Score query", "Waiting."), ("Rank intervals", "Waiting.")]))
         run.click(_select, [video, query, mode], [matches, flow])
     return page
 
@@ -92,15 +106,22 @@ def _edit(video, prompt, mode):
 
 
 def build_editing() -> gr.Blocks:
-    with gr.Blocks() as page:
-        gr.Markdown("# Text Manipulation\nApply a text-directed lighting or color edit to a recorded camera episode.")
+    with gr.Blocks(css=".internal-flow button,.internal-flow summary{font-size:1.2rem!important;font-weight:700!important}.evow-media{border:2px solid #71869a!important;border-radius:10px!important;padding:6px!important;background:#f8fafc!important}") as page:
+        gr.Markdown("# Text Manipulation")
         with gr.Row():
-            video = gr.Video(label="Recorded episode")
+            gr.Markdown("## 1. Source")
+            video = gr.Video(label="Video", elem_classes="evow-media")
             with gr.Column():
-                prompt = gr.Textbox(label="Edit instruction", placeholder="make the scene warmer and brighter")
-                mode = gr.Radio([("Implicit video edit", "implicit"), ("Explicit scene render edit", "explicit")], value="implicit", label="Method")
-                run = gr.Button("Apply edit", variant="primary")
-        result = gr.Video(label="Edited camera view")
-        flow = gr.HTML(value=flow_html("Text editing", "implicit", [("Decode source", "Waiting."), ("Apply text-directed edit", "Waiting."), ("Render edited view", "Waiting.")]))
+                gr.Markdown("## 2. Instruction")
+                prompt = gr.Textbox(label="Instruction", placeholder="make the scene warmer and brighter")
+                gr.Markdown("## 3. Mode")
+                mode = gr.Radio([("Implicit video edit", "implicit"), ("Explicit scene render edit", "explicit")], value="implicit", label="Mode")
+                gr.Markdown("## 4. Apply")
+                run = gr.Button("Apply", variant="primary")
+        gr.Markdown("## 5. Output")
+        result = gr.Video(label="Result", elem_classes="evow-media")
+        gr.Markdown("## Internal Execution Flow")
+        with gr.Accordion("Show / hide", open=False, elem_classes="internal-flow"):
+            flow = gr.HTML(value=flow_html("Text editing", "implicit", [("Decode source", "Waiting."), ("Apply text-directed edit", "Waiting."), ("Render edited view", "Waiting.")]))
         run.click(_edit, [video, prompt, mode], [result, flow])
     return page

@@ -27,6 +27,7 @@ def _snapshot(
     message: str,
     video: Path | None = None,
     models: list[Path] | None = None,
+    workflow_changed: bool = True,
 ) -> dict:
     previews = []
     for event in trace.record["events"]:
@@ -38,6 +39,7 @@ def _snapshot(
         "run_id": run_dir.name,
         "message": message,
         "trace": trace.record,
+        "workflow_changed": workflow_changed,
         "previews": previews,
         "source_video": str(run_dir / "source.mp4") if (run_dir / "source.mp4").is_file() else None,
         "video": str(video) if video else None,
@@ -50,6 +52,7 @@ def execute_run(
     mode: str,
     start_seconds: float,
     frame_count: int,
+    source_fov_degrees: float,
     yaw_degrees: float,
     lateral_shift: float,
     fov_degrees: float,
@@ -59,6 +62,8 @@ def execute_run(
         raise ValueError("Choose Implicit video or Explicit 3D.")
     if frame_count not in (13, 29, 41):
         raise ValueError("Choose 13, 29, or 41 frames.")
+    if not 35.0 <= source_fov_degrees <= 110.0:
+        raise ValueError("Choose a source camera field of view between 35 and 110 degrees.")
     request = ViewRequest(yaw_degrees, lateral_shift, fov_degrees)
     request.validate()
     run_dir = _run_directory()
@@ -69,6 +74,7 @@ def execute_run(
             "start_seconds": start_seconds,
             "frame_count": frame_count,
             "fps": settings.fps,
+            "source_fov_degrees": source_fov_degrees,
             "yaw_degrees": yaw_degrees,
             "lateral_shift_scene_units": lateral_shift,
             "fov_degrees": fov_degrees,
@@ -84,11 +90,14 @@ def execute_run(
             {"frames": frame_count, "fps": settings.fps, "stationary_view_assumed": True},
         )
         yield _snapshot(run_dir, trace, "Input clip ready.")
+        # A whole HTML replacement collapses every native <details> card. Only
+        # refresh it when the visible stage or its status changes.
+        last_workflow_state = ("Input clip", "complete")
 
         backend = (
-            run_implicit(frames, request, run_dir, settings)
+            run_implicit(frames, request, source_fov_degrees, run_dir, settings)
             if mode == "implicit" else
-            run_explicit(frames, request, run_dir, settings)
+            run_explicit(frames, request, source_fov_degrees, run_dir, settings)
         )
         while True:
             try:
@@ -96,12 +105,18 @@ def execute_run(
             except StopIteration as finished:
                 result = finished.value
                 break
+            workflow_changed = False
             if update.get("record", True):
                 trace.add(
                     update["stage"], update["status"], update["detail"],
                     update.get("preview"), update.get("metrics"),
                 )
-            yield _snapshot(run_dir, trace, update["detail"])
+                workflow_state = (update["stage"], update["status"])
+                workflow_changed = workflow_state != last_workflow_state
+                last_workflow_state = workflow_state
+            yield _snapshot(
+                run_dir, trace, update["detail"], workflow_changed=workflow_changed,
+            )
 
         video = Path(result["video"])
         models = list(result["models"])

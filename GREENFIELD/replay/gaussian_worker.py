@@ -61,12 +61,13 @@ def main() -> None:
     parser.add_argument("--frames", type=Path, required=True)
     parser.add_argument("--depths", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--yaw", type=float, required=True)
-    parser.add_argument("--shift", type=float, required=True)
-    parser.add_argument("--fov", type=float, required=True)
+    parser.add_argument("--render-yaw", type=float, required=True)
+    parser.add_argument("--render-shift", type=float, required=True)
+    parser.add_argument("--render-fov", type=float, required=True)
+    parser.add_argument("--source-fov", type=float, default=70.0)
     args = parser.parse_args()
     settings = load_settings()
-    request = ViewRequest(args.yaw, args.shift, args.fov)
+    request = ViewRequest(args.render_yaw, args.render_shift, args.render_fov)
     frames = np.load(args.frames)
     with np.load(args.depths) as data:
         depths = scene_depths(data["depths"])
@@ -75,7 +76,7 @@ def main() -> None:
     device = torch.device("cuda")
     torch.manual_seed(0)
     centers, scales, colors, offsets, color_offsets = _initial_gaussians(
-        frames, depths, args.fov, settings.gaussian_stride,
+        frames, depths, args.source_fov, settings.gaussian_stride,
     )
     print(f"Optimizing {len(centers)} persistent 3D Gaussians over {count} frames", flush=True)
     xyz = torch.nn.Parameter(torch.tensor(centers, device=device, dtype=torch.float32))
@@ -88,7 +89,7 @@ def main() -> None:
     quats = torch.nn.Parameter(torch.zeros((len(centers), 4), device=device))
     with torch.no_grad():
         quats[:, 0] = 1
-    camera = torch.tensor(intrinsics(height, width, args.fov), device=device)
+    camera = torch.tensor(intrinsics(height, width, args.source_fov), device=device)
     source_view = torch.eye(4, device=device)
     targets = torch.tensor(frames, device=device, dtype=torch.float32) / 255.0
     initial_depth = xyz[:, 2].detach().clone()
@@ -99,6 +100,14 @@ def main() -> None:
         {"params": [opacity_logits], "lr": 0.01},
         {"params": [motion], "lr": 0.002},
     ])
+    progress_path = args.out / "progress.json"
+
+    def write_progress(record: dict) -> None:
+        """Atomically publish one complete optimizer update for the UI reader."""
+        temporary = progress_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(record))
+        temporary.replace(progress_path)
+
     for step in range(settings.gaussian_steps):
         frame_index = step % count
         optimizer.zero_grad(set_to_none=True)
@@ -116,19 +125,20 @@ def main() -> None:
         loss = reconstruction + 0.002 * depth_penalty + 0.01 * smoothness
         loss.backward()
         optimizer.step()
+        record = {"step": step + 1, "total": settings.gaussian_steps,
+                  "loss": round(float(reconstruction.detach().cpu()), 5), "gaussians": len(centers)}
+        # Preview encoding stays sparse; numerical progress is atomically written every step.
         if step == 0 or (step + 1) % 25 == 0 or step + 1 == settings.gaussian_steps:
             preview = args.out / f"training_{step + 1:04d}.png"
             imageio.imwrite(preview, (rgb.detach().cpu().numpy().clip(0, 1) * 255).astype(np.uint8))
-            (args.out / "progress.json").write_text(json.dumps({
-                "step": step + 1, "total": settings.gaussian_steps,
-                "loss": round(float(reconstruction.detach().cpu()), 5),
-                "gaussians": len(centers), "preview": str(preview),
-            }))
-            print(f"step {step + 1}/{settings.gaussian_steps} loss={loss.item():.5f}", flush=True)
+            record["preview"] = str(preview)
+        write_progress(record)
+        print(f"step {step + 1}/{settings.gaussian_steps} loss={loss.item():.5f}", flush=True)
 
     target_pose = torch.tensor(target_cam_to_world(request), device=device)
     target_view = torch.linalg.inv(target_pose)
     all_renders = []
+    render_camera = torch.tensor(intrinsics(height, width, args.render_fov), device=device)
     with torch.inference_mode():
         for index in range(count):
             means = xyz + motion[index]
@@ -136,7 +146,7 @@ def main() -> None:
             opacity = opacity_logits.sigmoid()
             color = (color_logits + temporal_color[index]).sigmoid()
             rgb, _ = _render(means, quats, scale, opacity, color,
-                             target_view, camera, width, height)
+                             target_view, render_camera, width, height)
             all_renders.append((rgb.cpu().numpy().clip(0, 1) * 255).astype(np.uint8))
             save_splat(
                 args.out / f"splat_{index:03d}.splat",
@@ -150,11 +160,11 @@ def main() -> None:
         "color_logits": color_logits.detach().cpu(),
         "opacity_logits": opacity_logits.detach().cpu(),
         "motion": motion.detach().cpu(), "temporal_color": temporal_color.detach().cpu(),
-        "quaternions": quats.detach().cpu(), "fov_degrees": args.fov, "fps": settings.fps,
+        "quaternions": quats.detach().cpu(), "source_fov_degrees": args.source_fov, "render_fov_degrees": args.render_fov, "fps": settings.fps,
     }, args.out / "scene.pt")
     (args.out / "scene.json").write_text(json.dumps({
         "representation": "time_varying_3d_gaussians", "gaussians": len(centers),
-        "frames": count, "fov_degrees": args.fov,
+        "frames": count, "source_fov_degrees": args.source_fov, "render_fov_degrees": args.render_fov,
         "limitations": "Single fixed camera; unobserved geometry and absolute scale are uncertain.",
     }, indent=2))
     print("Native 4D Gaussian scene and video saved", flush=True)

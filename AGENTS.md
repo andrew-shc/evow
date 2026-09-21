@@ -32,6 +32,7 @@
 - Activate it for interactive work with `conda activate evow`. If the shell has not initialized Conda, source the Conda installation's `etc/profile.d/conda.sh` first.
 - Use `conda run -n evow <command>` for non-interactive commands.
 - Install the replay application dependencies from `CONFIGS/replay_requirements.txt`. Install CUDA PyTorch and torchvision from the official PyTorch wheel index first; `GREENFIELD/replay/README.md` has the run command.
+- After changing the LAN dashboard or replay pipeline, restart the running Gradio process before handoff so LAN clients receive the new code. Launch it from the repo root with `conda run -n evow python -m GREENFIELD.replay.app`; keep its runtime log under `ASSETS/replay/`.
 
 ## Our code (GREENFIELD/) and set-aside code (OLD/)
 - `./GREENFIELD/` is the home for all newly-written code that's ours — think of it as `src/` for this repo. Code here is free to call into sibling vendored folders (e.g. drive `TensoSDF/run_training.py` from a `GREENFIELD/` script); the boundary is about ownership, not a hard sandbox.
