@@ -2,7 +2,7 @@
 
 import unittest
 
-from GREENFIELD.replay.workflow import workflow_header
+from GREENFIELD.replay.workflow import workflow_card_html, workflow_header
 
 
 class WorkflowHeaderTest(unittest.TestCase):
@@ -54,6 +54,13 @@ class WorkflowHeaderTest(unittest.TestCase):
         self.assertEqual(state_class, "evow-stage-failed")
         self.assertIn("Failed", label)
         self.assertIn("0.00s", label)
+
+    def test_expanded_card_omits_the_outer_header_metadata(self) -> None:
+        html = workflow_card_html({"mode": "explicit", "events": []}, 0)
+
+        self.assertNotIn("evow-stage-summary", html)
+        self.assertNotIn("evow-stage-number", html)
+        self.assertNotIn("evow-stage-duration", html)
 
     def test_saved_completed_trace_keeps_its_recorded_duration(self) -> None:
         label, state_class = workflow_header({
