@@ -9,6 +9,16 @@ from GREENFIELD.replay.app import build_app as build_replay
 FLOW_HEADER_CSS = """
 html, body { overflow-x: hidden !important; }
 .internal-flow { overflow-x: hidden !important; }
+/* The execution flow is a compact scan list, not a card stack. */
+.internal-flow > div > .column { gap: 6px !important; }
+/* Keep the section panels, but make method choices read as one aligned group. */
+.evow-method-choice .wrap { flex-direction: column !important; align-items: flex-start !important; gap: 6px !important; }
+.evow-method-choice label { width: 100%; box-shadow: none !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; padding: 4px 0 !important; }
+.evow-method-choice label:hover, .evow-method-choice label.selected { background: transparent !important; }
+/* Captions keep Clip labels visible without recreating component containers. */
+.evow-clip-panel > div > .column { gap: 6px !important; }
+.evow-clip-caption { min-height: 0 !important; margin: 4px 0 -2px !important; padding: 0 !important; color: #425466; font-size: 12px; }
+.evow-clip-caption p { margin: 0 !important; }
 .internal-flow > button {
   width: 1.5rem !important;
   min-height: 1.5rem !important;
@@ -25,6 +35,7 @@ html, body { overflow-x: hidden !important; }
 .evow-generation-spinner::after { content: ""; position: absolute; inset: 0; z-index: 10; background: rgb(248 250 252 / 72%); pointer-events: all; }
 .evow-generation-spinner::before { content: ""; position: absolute; top: 50%; left: 50%; z-index: 11; width: 28px; height: 28px; margin: -14px; border: 3px solid #628197; border-top-color: #102a43; border-radius: 50%; animation: evow-generation-spin .8s linear infinite; }
 @keyframes evow-generation-spin { to { transform: rotate(360deg); } }
+.evow-stage { box-shadow: none !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; overflow: visible !important; }
 .evow-stage > button { display: flex !important; align-items: center; justify-content: flex-start !important; margin: 0 !important; height: 2.7rem; min-height: 2.7rem; padding: 9px 11px !important; border: 1px solid #cbd5df !important; border-left: 5px solid #94a3b8 !important; border-radius: 7px !important; background: #f8fafc !important; text-align: left !important; white-space: nowrap !important; }
 .evow-stage > button > span:first-child { position: relative; display: block !important; flex: 1 1 0 !important; min-width: 0; width: auto !important; height: 1.3rem; overflow: hidden; font-size: 0 !important; text-align: left !important; }
 .evow-stage > button > .icon { flex: 0 0 auto; margin: 0 0 0 12px !important; }

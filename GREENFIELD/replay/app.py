@@ -80,6 +80,11 @@ def _display(state: dict):
     )
 
 
+def _clip_caption(label: str) -> None:
+    """Render a field description without asking Gradio to create a control card."""
+    gr.Markdown(f"**{label}**", elem_classes="evow-clip-caption", container=False, padding=False)
+
+
 def _included_sample() -> str:
     """Load the bundled locked-off trees sample into the input component."""
     if not SAMPLE_VIDEO.is_file():
@@ -162,7 +167,7 @@ def build_app() -> gr.Blocks:
                 source = gr.Video(label="Source", sources=["upload", "webcam"], format="mp4", elem_classes="evow-media")
                 sample_button = gr.Button("Use Sample", interactive=SAMPLE_VIDEO.is_file())
                 with gr.Accordion("Saved", open=False):
-                    saved = gr.Dropdown(choices=list_saved_runs(), label="Run")
+                    saved = gr.Dropdown(choices=list_saved_runs(), label=None, show_label=False, container=False)
                     load_button = gr.Button("Load")
 
                 gr.Markdown("## 2. Methodology")
@@ -170,12 +175,15 @@ def build_app() -> gr.Blocks:
                     [("Explicit 3D: 4D Gaussian", "explicit"),
                      ("Implicit 3D: Video Diffusion", "implicit"),
                      ("Explicit 3D: Animated Mesh", "mesh")],
-                    value="explicit", label="Method",
+                    value="explicit", label=None, show_label=False, container=True, elem_classes="evow-method-choice",
                 )
-                with gr.Accordion("Clip", open=False):
-                    start = gr.Number(value=0, minimum=0, label="Start")
-                    count = gr.Radio([13, 29, 41], value=settings.default_frames, label="Frames")
-                    source_fov = gr.Slider(35, 110, value=70, step=1, label="Source camera field of view")
+                with gr.Accordion("Clip", open=False, elem_classes="evow-clip-panel"):
+                    _clip_caption("Start")
+                    start = gr.Number(value=0, minimum=0, label="Start", container=False)
+                    _clip_caption("Frames")
+                    count = gr.Radio([13, 29, 41], value=settings.default_frames, label="Frames", container=False)
+                    _clip_caption("Source camera field of view")
+                    source_fov = gr.Slider(35, 110, value=70, step=1, label="Source camera field of view", container=False)
 
                 gr.Markdown("## 3. Different Camera View")
                 yaw = gr.Slider(-15, 15, value=4, step=1, label="Turn")
