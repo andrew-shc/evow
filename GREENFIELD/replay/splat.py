@@ -5,6 +5,25 @@ from pathlib import Path
 import numpy as np
 
 
+def timeline_keyframe_indices(frame_count: int, fps: float, timeline_fps: float) -> tuple[int, ...]:
+    """Select sparse timeline samples while always retaining the final frame."""
+    if frame_count < 1 or fps <= 0 or timeline_fps <= 0:
+        raise ValueError("Timeline sampling requires positive frame count and rates.")
+    sample_count = max(1, int(np.ceil(frame_count * timeline_fps / fps)))
+    indices = [min(frame_count - 1, round(sample * fps / timeline_fps)) for sample in range(sample_count)]
+    if indices[-1] != frame_count - 1:
+        indices.append(frame_count - 1)
+    return tuple(dict.fromkeys(indices))
+
+
+def timeline_keyframe_durations(indices: tuple[int, ...], fps: float) -> tuple[float, ...]:
+    """Give each sparse scene its real display interval, including the endpoint."""
+    if not indices or fps <= 0:
+        raise ValueError("Timeline durations require indices and a positive frame rate.")
+    durations = [max((following - current) / fps, 1 / fps) for current, following in zip(indices, indices[1:])]
+    return tuple(durations + [1 / fps])
+
+
 def save_splat(
     path: Path,
     centers: np.ndarray,

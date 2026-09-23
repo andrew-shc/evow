@@ -1,0 +1,21 @@
+# Declarative configuration for local, capability-limited feature adapters.
+models:
+  future_video: stabilityai/stable-video-diffusion-img2vid-xt
+  semantic_retrieval: google/siglip-base-patch16-224
+  instruction_edit: timbrooks/instruct-pix2pix
+runtime:
+  # Future View always uses the end of the supplied episode. Keeping cadence
+  # explicit makes the Gaussian motion prior comparable across source videos.
+  future_history_seconds: 7.5
+  future_history_fps: 12
+  future_output_seconds: 30
+  future_output_fps: 6
+  # The orbitable 3D viewer uses representative temporal keyframes. The
+  # downloadable forecast video remains at future_output_fps.
+  future_splat_timeline_fps: 1
+  future_svd_chunk_frames: 25
+  future_motion_fit_frames: 12
+  future_max_side: 1024
+  max_input_frames: 90
+  future_max_seconds: 3
+  deterministic_seed: 0

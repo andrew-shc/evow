@@ -14,7 +14,7 @@ from .clip import write_video
 from .depth_prior import scene_depths
 from .pose import ViewRequest, intrinsics, target_cam_to_world
 from .settings import load_settings
-from .splat import save_splat
+from .splat import save_splat, timeline_keyframe_indices
 
 
 def _initial_gaussians(frames: np.ndarray, depths: np.ndarray, fov: float, stride: int):
@@ -65,6 +65,11 @@ def main() -> None:
     parser.add_argument("--render-shift", type=float, required=True)
     parser.add_argument("--render-fov", type=float, required=True)
     parser.add_argument("--source-fov", type=float, default=70.0)
+    parser.add_argument("--forecast-frames", type=int, default=0)
+    parser.add_argument("--forecast-fps", type=int, default=6)
+    parser.add_argument("--motion-fit-frames", type=int, default=12)
+    parser.add_argument("--history-fps", type=float, default=0)
+    parser.add_argument("--splat-keyframe-fps", type=float, default=0)
     args = parser.parse_args()
     settings = load_settings()
     request = ViewRequest(args.render_yaw, args.render_shift, args.render_fov)
@@ -125,7 +130,7 @@ def main() -> None:
         loss = reconstruction + 0.002 * depth_penalty + 0.01 * smoothness
         loss.backward()
         optimizer.step()
-        record = {"step": step + 1, "total": settings.gaussian_steps,
+        record = {"phase": "fit_gaussians", "step": step + 1, "total": settings.gaussian_steps,
                   "loss": round(float(reconstruction.detach().cpu()), 5), "gaussians": len(centers)}
         # Preview encoding stays sparse; numerical progress is atomically written every step.
         if step == 0 or (step + 1) % 25 == 0 or step + 1 == settings.gaussian_steps:
@@ -139,6 +144,11 @@ def main() -> None:
     target_view = torch.linalg.inv(target_pose)
     all_renders = []
     render_camera = torch.tensor(intrinsics(height, width, args.render_fov), device=device)
+    observed_indices = (
+        timeline_keyframe_indices(count, args.history_fps, args.splat_keyframe_fps)
+        if args.splat_keyframe_fps else tuple(range(count))
+    )
+    observed_index_set = set(observed_indices)
     with torch.inference_mode():
         for index in range(count):
             means = xyz + motion[index]
@@ -148,12 +158,44 @@ def main() -> None:
             rgb, _ = _render(means, quats, scale, opacity, color,
                              target_view, render_camera, width, height)
             all_renders.append((rgb.cpu().numpy().clip(0, 1) * 255).astype(np.uint8))
-            save_splat(
-                args.out / f"splat_{index:03d}.splat",
-                means.cpu().numpy(), scale.cpu().numpy(), color.cpu().numpy(),
-                opacity.cpu().numpy(), quats.cpu().numpy(),
-            )
+            if index in observed_index_set:
+                exported = observed_indices.index(index) + 1
+                write_progress({"phase": "export_observed_keyframes", "completed": exported,
+                                "total": len(observed_indices), "gaussians": len(centers)})
+                save_splat(args.out / f"splat_{index:03d}.splat", means.cpu().numpy(),
+                           scale.cpu().numpy(), color.cpu().numpy(), opacity.cpu().numpy(), quats.cpu().numpy())
     write_video(np.stack(all_renders), args.out / "rendered.mp4", settings.fps)
+    if args.forecast_frames:
+        fit = min(args.motion_fit_frames, count)
+        times = torch.arange(fit, device=device, dtype=torch.float32)
+        centered = times - times.mean()
+        velocity = (centered[:, None, None] * (motion[-fit:] - motion[-fit:].mean(dim=0))).sum(dim=0) / centered.square().sum().clamp_min(1e-6)
+        forecast = []
+        forecast_indices = (
+            timeline_keyframe_indices(args.forecast_frames, args.forecast_fps, args.splat_keyframe_fps)
+            if args.splat_keyframe_fps else tuple(range(args.forecast_frames))
+        )
+        forecast_index_set = set(forecast_indices)
+        with torch.inference_mode():
+            for index in range(args.forecast_frames):
+                delta = (index + 1) * settings.fps / args.forecast_fps
+                means = xyz + motion[-1] + velocity * delta
+                scale = log_scales.exp()
+                opacity = opacity_logits.sigmoid()
+                color = (color_logits + temporal_color[-1]).sigmoid()
+                rgb, _ = _render(means, quats, scale, opacity, color, source_view, camera, width, height)
+                forecast.append((rgb.cpu().numpy().clip(0, 1) * 255).astype(np.uint8))
+                if index in forecast_index_set:
+                    exported = forecast_indices.index(index) + 1
+                    write_progress({"phase": "render_forecast_and_export_keyframes", "completed": exported,
+                                    "total": len(forecast_indices), "rendered_frames": index + 1,
+                                    "forecast_frames": args.forecast_frames, "gaussians": len(centers)})
+                    save_splat(args.out / f"forecast_splat_{index:03d}.splat", means.cpu().numpy(),
+                               scale.cpu().numpy(), color.cpu().numpy(), opacity.cpu().numpy(), quats.cpu().numpy())
+        write_progress({"phase": "encode_forecast_video", "completed": args.forecast_frames,
+                        "total": args.forecast_frames, "gaussians": len(centers)})
+        write_video(np.stack(forecast), args.out / "forecast.mp4", args.forecast_fps)
+        torch.save({"velocity": velocity.cpu(), "frames": args.forecast_frames, "fps": args.forecast_fps}, args.out / "forecast_scene.pt")
     imageio.imwrite(args.out / "render_000.png", all_renders[0])
     torch.save({
         "means": xyz.detach().cpu(), "log_scales": log_scales.detach().cpu(),

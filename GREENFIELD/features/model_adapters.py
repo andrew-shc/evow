@@ -1,0 +1,114 @@
+"""Lazy local-only inference adapters; browser requests never download weights."""
+from functools import lru_cache
+import numpy as np
+from GREENFIELD.app_core.models import require_checkpoint, require_package
+from .future_settings import load_future_settings
+
+def _device():
+    require_package("torch", "models")
+    import torch
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+@lru_cache(maxsize=1)
+def stable_video_pipeline():
+    require_package("diffusers", "models")
+    settings = load_future_settings(); require_checkpoint(settings.checkpoint, "Stable Video Diffusion")
+    import torch
+    from diffusers import StableVideoDiffusionPipeline
+    return StableVideoDiffusionPipeline.from_pretrained(settings.checkpoint, local_files_only=True, variant="fp16", torch_dtype=torch.float16 if _device() == "cuda" else torch.float32).to(_device())
+
+def generate_continuation_steps(frame: np.ndarray, count: int, seed: int):
+    """Yield completed local SVD chunks, releasing all CUDA state on completion."""
+    require_package("PIL", "models")
+    import gc
+    import torch
+    from PIL import Image
+    settings = load_future_settings()
+    result = []
+    current = Image.fromarray(frame)
+    pipe = stable_video_pipeline()
+    try:
+        # The first yield separates model loading from the generated-video stage.
+        yield 0, None
+        for chunk in range((count + settings.chunk_frames - 1) // settings.chunk_frames):
+            generator = torch.Generator(device=_device()).manual_seed(seed + chunk)
+            images = pipe(current, num_frames=settings.chunk_frames, generator=generator).frames[0]
+            result.extend(np.asarray(image.convert("RGB")) for image in images)
+            current = images[-1]
+            yield min(len(result), count), result
+    finally:
+        # A LAN request must not reserve the workstation GPU after its result is saved.
+        pipe.to("cpu")
+        del pipe
+        stable_video_pipeline.cache_clear()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+
+def generate_continuation(frame: np.ndarray, count: int, seed: int) -> list[np.ndarray]:
+    """Consume the streamed SVD adapter for callers that only need its result."""
+    steps = generate_continuation_steps(frame, count, seed)
+    _loaded, _ = next(steps)
+    generated = []
+    for _completed, generated in steps:
+        pass
+    return generated[:count]
+
+
+@lru_cache(maxsize=1)
+def instruction_edit_pipeline():
+    require_package("diffusers", "models")
+    from pathlib import Path
+    root = load_future_settings().root; checkpoint = root / "ASSETS" / "checkpoints" / "instruct-pix2pix"; require_checkpoint(checkpoint, "InstructPix2Pix")
+    import torch
+    from diffusers import StableDiffusionInstructPix2PixPipeline
+    return StableDiffusionInstructPix2PixPipeline.from_pretrained(checkpoint, local_files_only=True, torch_dtype=torch.float16 if _device() == "cuda" else torch.float32).to(_device())
+
+def edit_frame(frame, prompt, seed):
+    from PIL import Image
+    import torch
+    return np.asarray(instruction_edit_pipeline()(prompt=prompt, image=Image.fromarray(frame), generator=torch.manual_seed(seed), num_inference_steps=20).images[0].convert("RGB"))
+
+@lru_cache(maxsize=1)
+def siglip():
+    require_package("transformers", "models")
+    from pathlib import Path
+    from transformers import AutoModel, AutoProcessor
+    checkpoint = load_future_settings().root / "ASSETS" / "checkpoints" / "siglip"; require_checkpoint(checkpoint, "SigLIP")
+    return AutoProcessor.from_pretrained(checkpoint, local_files_only=True), AutoModel.from_pretrained(checkpoint, local_files_only=True).to(_device())
+
+def rank_semantic_frames(frames, query):
+    import faiss, torch
+    processor, model = siglip(); device = next(model.parameters()).device
+    with torch.inference_mode():
+        text = model.get_text_features(**processor(text=[query], padding="max_length", return_tensors="pt").to(device)).cpu().numpy().astype(np.float32)
+        vectors = np.asarray([model.get_image_features(**processor(images=frame, return_tensors="pt").to(device)).cpu().numpy()[0] for frame in frames], dtype=np.float32)
+    vectors /= np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12); text /= np.maximum(np.linalg.norm(text, axis=1, keepdims=True), 1e-12)
+    index = faiss.IndexFlatIP(vectors.shape[1]); index.add(vectors); scores, indices = index.search(text, min(5, len(frames))); return scores[0], indices[0]
+
+
+def rank_semantic_frame_steps(frames, query):
+    """Yield per-frame SigLIP progress, then return the local FAISS ranking."""
+    import faiss, torch
+    processor, model = siglip()
+    device = next(model.parameters()).device
+    with torch.inference_mode():
+        text = model.get_text_features(
+            **processor(text=[query], padding="max_length", return_tensors="pt").to(device)
+        ).cpu().numpy().astype(np.float32)
+        vectors = []
+        for completed, frame in enumerate(frames, 1):
+            vector = model.get_image_features(
+                **processor(images=frame, return_tensors="pt").to(device)
+            ).cpu().numpy()[0]
+            vectors.append(vector)
+            yield completed, len(frames)
+    vectors = np.asarray(vectors, dtype=np.float32)
+    vectors /= np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12)
+    text /= np.maximum(np.linalg.norm(text, axis=1, keepdims=True), 1e-12)
+    index = faiss.IndexFlatIP(vectors.shape[1])
+    index.add(vectors)
+    scores, indices = index.search(text, min(5, len(frames)))
+    return scores[0], indices[0]

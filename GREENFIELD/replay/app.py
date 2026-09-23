@@ -15,6 +15,7 @@ from .run import execute_run, list_saved_runs, load_saved_run
 from .splat_viewer import empty_splat_html, splat_html
 from .workflow import workflow_card_html, workflow_header
 
+from GREENFIELD.app_core.ui import source_and_saved_controls
 
 SAMPLE_VIDEO = settings.assets / "replay" / "samples" / "trees_swaying_pexels_12644693.mp4"
 REPLAY_CSS = """
@@ -163,12 +164,10 @@ def build_app() -> gr.Blocks:
         )
         with gr.Row():
             with gr.Column(scale=1):
-                gr.Markdown("## 1. Source")
-                source = gr.Video(label="Source", sources=["upload", "webcam"], format="mp4", elem_classes="evow-media")
-                sample_button = gr.Button("Use Sample", interactive=SAMPLE_VIDEO.is_file())
-                with gr.Accordion("Saved", open=False):
-                    saved = gr.Dropdown(choices=list_saved_runs(), label=None, show_label=False, container=False)
-                    load_button = gr.Button("Load")
+                source, sample_button, saved, load_button = source_and_saved_controls(
+                    "Source", list_saved_runs(), "ASSETS/replay/runs/", SAMPLE_VIDEO.is_file(),
+                    "evow-replay-saved-runs",
+                )
 
                 gr.Markdown("## 2. Methodology")
                 mode = gr.Radio(
@@ -243,6 +242,17 @@ def build_app() -> gr.Blocks:
     return app
 
 
+def _allowed_paths() -> list[str]:
+    """Serve Replay and Future View artifacts, but not arbitrary asset data.
+
+    Gradio's file route rejects paths outside this list. Replay worked because
+    its run directory was included, while Future View's splats were denied with
+    HTTP 403 before the browser renderer ever saw their bytes.
+    """
+    return [str(settings.run_root), str(settings.assets / "future" / "runs"),
+            str(settings.root / "GREENFIELD"), str(Path(__file__).with_name("gaussian_viewer.bundle.js"))]
+
+
 def main() -> None:
     """Launch the private dashboard on the configured LAN address."""
     from GREENFIELD.dashboard import build_dashboard
@@ -250,8 +260,7 @@ def main() -> None:
     app.queue(default_concurrency_limit=1)
     app.launch(
         server_name=os.environ.get("EVOW_BIND_HOST", "0.0.0.0"), server_port=7860, share=False,
-        allowed_paths=[str(settings.run_root), str(settings.root / "GREENFIELD"), str(Path(__file__).with_name("gaussian_viewer.bundle.js"))],
-        show_error=True,
+        allowed_paths=_allowed_paths(), show_error=True,
     )
 
 

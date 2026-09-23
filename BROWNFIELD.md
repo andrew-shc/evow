@@ -12,3 +12,6 @@ Status legend: not started | partial | migrated
 ## Change log
 
 - 2026-09-16: Added the two upstream checkouts to drive the first replay feature without modifying their source. Greenfield wrappers redirect checkpoints and outputs to `ASSETS/`; model and capture parameters live in `CONFIGS/replay.yaml`. Both folders remain **partial** because the upstream example commands have not been migrated.
+
+- 2026-09-22: Added declarative local Diffusers, Transformers/SigLIP, and FAISS feature adapters. Model setup remains an explicit owner action and all generated data stays under `ASSETS/`.
+- 2026-09-22: Future View explicit forecasting reuses the Video Depth Anything and gsplat replay workers with all per-run scene data redirected to `ASSETS/future/runs/`; both vendored folders remain **partial**.

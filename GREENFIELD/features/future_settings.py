@@ -1,0 +1,20 @@
+"""Declarative Future View settings and local checkpoint locations."""
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+import yaml
+
+@dataclass(frozen=True)
+class FutureSettings:
+    root: Path; model_id: str; checkpoint: Path; history_seconds: float; history_fps: int
+    output_seconds: int; output_fps: int; splat_timeline_fps: int
+    chunk_frames: int; motion_fit_frames: int; max_side: int
+    @property
+    def output_frames(self): return self.output_seconds * self.output_fps
+
+@lru_cache(maxsize=1)
+def load_future_settings() -> FutureSettings:
+    root = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load((root / "CONFIGS" / "features.yaml").read_text())
+    runtime, models = config["runtime"], config["models"]
+    return FutureSettings(root, models["future_video"], root / "ASSETS" / "checkpoints" / "stable-video-diffusion", float(runtime["future_history_seconds"]), int(runtime["future_history_fps"]), int(runtime["future_output_seconds"]), int(runtime["future_output_fps"]), int(runtime["future_splat_timeline_fps"]), int(runtime["future_svd_chunk_frames"]), int(runtime["future_motion_fit_frames"]), int(runtime["future_max_side"]))
