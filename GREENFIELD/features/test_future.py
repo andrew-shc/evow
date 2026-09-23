@@ -1,15 +1,23 @@
 import numpy as np
 from GREENFIELD.features.future_explicit import extrapolate_motion, ordered_future_splats
 from GREENFIELD.replay.splat import timeline_keyframe_durations, timeline_keyframe_indices
-from GREENFIELD.replay.splat_viewer import splat_html
+from GREENFIELD.replay.splat_viewer import (
+    MAX_SCENES_PER_VIEWER,
+    _boundary_percent,
+    _scene_groups,
+    splat_html,
+)
 from GREENFIELD.features.future_settings import load_future_settings
-from GREENFIELD.features.pages import _bounded_future_timeline
+
 
 def test_future_settings_have_fixed_30_second_output():
     settings = load_future_settings()
     assert settings.output_seconds == 30
     assert settings.output_fps == 6
     assert settings.output_frames == 180
+    assert settings.observed_splat_timeline_fps == 1
+    assert settings.forecast_splat_timeline_fps == 6
+
 
 def test_constant_velocity_extrapolation_uses_recent_motion():
     motion = np.arange(18, dtype=np.float32).reshape(6, 1, 3)
@@ -35,18 +43,66 @@ def test_future_splat_timeline_requires_every_frame(tmp_path):
         raise AssertionError("Missing forecast splat should reject the explicit result.")
 
 
-def test_splat_viewer_supports_mixed_rate_future_timeline():
-    html = splat_html(["observed.splat", "future.splat"], [1 / 12, 1 / 6],
-                      "Observed reconstruction · Generated future (not observed footage)")
-    assert "const frameDurations" in html
-    assert "setTimeout(advance" in html
-    assert "addSplatScene(sources[0]" in html
-    assert "loadedScenes = 1" in html
-    assert "loading selected 3D timeline" in html
-    assert "addSplatScenes(sources.slice(1)" in html
-    assert "viewer.removeSplatScenes" not in html
-    assert "showLoadingUI: false" in html
-    assert "not observed footage" in html
+def test_splat_viewer_preloads_full_mixed_rate_timeline_without_control_clutter():
+    paths = [f"frame_{index:03d}.splat" for index in range(MAX_SCENES_PER_VIEWER + 3)]
+    html = splat_html(paths, [1 / 12, 1 / 6] + [1 / 6] * (len(paths) - 2), observed_frame_count=1)
+    assert "const sourceGroups" in html
+    assert "Promise.all(sourceGroups.map(preloadGroup))" in html
+    assert "addSplatScenes(paths.map" in html
+    assert "dynamicScene: false" in html
+    assert "sources.slice(1)" not in html
+    assert "viewer.splatMesh.scenes.forEach" not in html
+    assert "updateTransforms" not in html
+    assert "time.textContent" not in html
+    assert "loadedScenes" not in html
+    assert "#context" not in html
+    assert "function frameIndexAt" in html
+    assert "function cameraState" in html
+    assert "function applyCameraState" in html
+    assert "previous.viewer.stop()" in html
+    assert "next.viewer.start()" in html
+    assert "step=&quot;0.01&quot;" in html
+    assert "observedBoundaryPercent = " in html
+
+
+def test_full_timeline_groups_keep_every_frame_within_shader_limit():
+    paths = [f"frame_{index:03d}.splat" for index in range(189)]
+    groups = _scene_groups(paths)
+    assert len(groups) == 6
+    assert all(1 <= len(group) <= MAX_SCENES_PER_VIEWER for group in groups)
+    assert [path for group in groups for path in group] == paths
+
+
+def test_elapsed_time_boundary_uses_mixed_frame_durations():
+    assert _boundary_percent([1 / 12, 1 / 6, 1 / 6], observed_frame_count=1) == 20.0
+    assert _boundary_percent([1 / 12, 1 / 6], observed_frame_count=None) is None
+
+
+def test_future_page_forwards_every_saved_splat_to_viewer(monkeypatch, tmp_path):
+    from GREENFIELD.features import pages
+
+    relative_paths = [f"explicit/{index:03d}.splat" for index in range(240)]
+    for relative_path in relative_paths:
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    captured = {}
+
+    def fake_splat_html(paths, durations, observed_frame_count):
+        captured["paths"] = paths
+        captured["durations"] = durations
+        captured["observed_frame_count"] = observed_frame_count
+        return "viewer"
+
+    monkeypatch.setattr(pages, "splat_html", fake_splat_html)
+    pages._future_viewer_update({"viewer": {
+        "splat_paths": relative_paths, "observed_frames": 72, "forecast_frames": 168,
+        "observed_fps": 12, "forecast_fps": 6, "splat_durations": [1 / 6] * len(relative_paths),
+    }}, tmp_path)
+
+    assert len(captured["paths"]) == len(relative_paths)
+    assert captured["durations"] == [1 / 6] * len(relative_paths)
+    assert captured["observed_frame_count"] == 72
 
 
 def test_explicit_result_persists_relative_viewer_metadata(monkeypatch, tmp_path):
@@ -55,12 +111,13 @@ def test_explicit_result_persists_relative_viewer_metadata(monkeypatch, tmp_path
     from GREENFIELD.features import future as future_module
     from GREENFIELD.features.future_explicit import ExplicitFutureArtifacts
 
-    settings = SimpleNamespace(output_seconds=30, output_frames=2, output_fps=6, splat_timeline_fps=1)
+    settings = SimpleNamespace(output_seconds=30, output_frames=2, output_fps=6, observed_splat_timeline_fps=1, forecast_splat_timeline_fps=6)
     forecast = tmp_path / "explicit" / "forecast.mp4"
     splats = (tmp_path / "explicit" / "splat_000.splat",
               tmp_path / "explicit" / "forecast_splat_000.splat",
               tmp_path / "explicit" / "forecast_splat_001.splat")
     monkeypatch.setattr(future_module, "load_future_settings", lambda: settings)
+
     def fake_explicit(frames, artifacts, settings):
         if False:
             yield None
@@ -75,7 +132,8 @@ def test_explicit_result_persists_relative_viewer_metadata(monkeypatch, tmp_path
                                                          "explicit/forecast_splat_000.splat",
                                                          "explicit/forecast_splat_001.splat"]
     assert result.metadata["viewer"]["observed_fps"] == 1
-    assert result.metadata["viewer"]["keyframe_fps"] == 1
+    assert result.metadata["viewer"]["forecast_fps"] == 6
+    assert result.metadata["viewer"]["keyframe_fps"] == 6
 
 
 def test_future_viewer_keyframes_include_each_segment_end():
@@ -86,14 +144,3 @@ def test_future_viewer_keyframes_include_each_segment_end():
     assert len(observed) + len(forecast) == 40
     assert sum(timeline_keyframe_durations(observed, 12)) == 7.5
     assert sum(timeline_keyframe_durations(forecast, 6)) == 30
-
-
-def test_future_viewer_downsamples_dense_legacy_timeline_without_losing_duration(tmp_path):
-    paths = [tmp_path / f"{index}.splat" for index in range(252)]
-    durations = [1 / 6] * len(paths)
-    selected, selected_durations = _bounded_future_timeline(paths, durations, observed_frames=72)
-    assert len(selected) == 13
-    assert selected[0] == paths[0]
-    assert paths[71] in selected and paths[72] in selected
-    assert selected[-1] == paths[-1]
-    assert abs(sum(selected_durations) - sum(durations)) < 1e-9

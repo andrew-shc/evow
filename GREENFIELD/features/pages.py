@@ -134,33 +134,6 @@ def _page(feature: str, title: str, source_label: str, controls: Callable[[], tu
 
 
 FUTURE_EXPLICIT_MODES = frozenset({"explicit"})
-FUTURE_VIEWER_MAX_KEYFRAMES = 13
-
-
-def _bounded_future_timeline(paths: list[Path], durations: list[float], observed_frames: int) -> tuple[list[Path], list[float]]:
-    """Keep Replay-style preload fast, including for older dense Future runs.
-
-    The browser renderer is fast after one batch build, not while it mutates
-    scene buffers during playback. Preserve the first frame and the observed /
-    generated boundary, then make each retained keyframe cover its skipped
-    interval so the displayed timeline still has the real total duration.
-    """
-    if len(paths) <= FUTURE_VIEWER_MAX_KEYFRAMES:
-        return paths, durations
-    required = {0, len(paths) - 1, max(0, observed_frames - 1), min(len(paths) - 1, observed_frames)}
-    slots = FUTURE_VIEWER_MAX_KEYFRAMES - len(required)
-    sampled = {round(step * (len(paths) - 1) / max(slots - 1, 1)) for step in range(max(slots, 1))}
-    indices = sorted(required | sampled)
-    # Rounded sampling can collide; fill unused slots in source order.
-    for index in range(len(paths)):
-        if len(indices) >= FUTURE_VIEWER_MAX_KEYFRAMES:
-            break
-        if index not in indices:
-            indices.append(index)
-    indices.sort()
-    bounded_paths = [paths[index] for index in indices]
-    bounded_durations = [sum(durations[index: following]) for index, following in zip(indices, indices[1:] + [len(paths)])]
-    return bounded_paths, bounded_durations
 
 
 def _future_viewer_update(metadata: dict, run_dir: Path) -> dict:
@@ -184,13 +157,7 @@ def _future_viewer_update(metadata: dict, run_dir: Path) -> dict:
     durations = viewer.get("splat_durations")
     if not isinstance(durations, list) or len(durations) != len(paths) or any(not isinstance(duration, (int, float)) or duration <= 0 for duration in durations):
         durations = [1 / observed_fps] * observed_frames + [1 / forecast_fps] * forecast_frames
-    timeline_paths, timeline_durations = _bounded_future_timeline(paths, durations, observed_frames)
-    reduced = len(timeline_paths) < len(paths)
-    description = (f"Interactive 3D keyframes at {viewer.get('keyframe_fps', observed_fps):g} fps · "
-                   f"observed tail: {observed_frames} frames · generated future: {forecast_frames} frames · "
-                   f"browser timeline: {len(timeline_paths)}{' representative' if reduced else ''} keyframes "
-                   "(the downloadable video remains full-rate; not observed footage)")
-    return gr.update(value=splat_html([str(path) for path in timeline_paths], timeline_durations, description), visible=True)
+    return gr.update(value=splat_html([str(path) for path in paths], durations, observed_frames), visible=True)
 
 
 def _future_method_change(mode: str) -> dict:
@@ -204,6 +171,16 @@ def _future_timing_update(trace: dict) -> dict:
     events = trace.get("events", [])
     elapsed = float(events[-1].get("elapsed_seconds", 0)) if events else 0
     return gr.update(value=f"**Run total:** {elapsed:.2f}s")
+
+
+def _clear_future_gpu_memory() -> str:
+    """Offer an owner-controlled recovery action after CUDA allocation failures."""
+    from .model_adapters import clear_gpu_memory
+    result = clear_gpu_memory()
+    before = result["before_bytes"] / 1024**3
+    after = result["after_bytes"] / 1024**3
+    released = ", ".join(result["released"]) or "cached CUDA allocations"
+    return f"**GPU memory cleared:** {released}. App allocation: {before:.2f} → {after:.2f} GiB."
 
 
 def _execute_future_stream(source: str, mode: str, request: object):
@@ -264,7 +241,9 @@ def build_future() -> gr.Blocks:
                                 value="explicit", show_label=False, elem_classes="evow-method-choice")
                 gr.Markdown("## 3. Forecast")
                 seed = gr.Number(value=0, precision=0, label="Seed")
-                gr.Markdown(f"Output: one generated {settings.output_seconds}-second future at {settings.output_fps} fps ({settings.output_frames} frames). Explicit 3D uses {settings.splat_timeline_fps} fps keyframes for responsive inspection; neither output is observed footage or a reliable prediction.")
+                clear_gpu = gr.Button("Clear GPU memory", variant="secondary")
+                gpu_status = gr.Markdown("Clear cached feature models after a CUDA OOM, then retry.")
+                gr.Markdown(f"Output: one generated {settings.output_seconds}-second future at {settings.output_fps} fps ({settings.output_frames} frames). Explicit 3D keeps observed history at {settings.observed_splat_timeline_fps} fps and exports the generated future at {settings.forecast_splat_timeline_fps} fps for smooth 3D playback; neither output is observed footage or a reliable prediction.")
                 gr.Markdown("## 4. Generate")
                 button = gr.Button("Generate", variant="primary")
             with gr.Column(scale=2):
@@ -295,6 +274,7 @@ def build_future() -> gr.Blocks:
 
         button.click(handle, [source, mode, seed], [output, splat_viewer, run_timing, *headers, *cards], concurrency_limit=1, show_progress="hidden")
         mode.change(_future_method_change, mode, splat_viewer)
+        clear_gpu.click(_clear_future_gpu_memory, None, gpu_status, queue=False, show_progress="hidden")
         sample.click(_sample, None, source)
         load.click(load_saved, saved, [source, output, splat_viewer, run_timing, *headers, *cards])
     return page

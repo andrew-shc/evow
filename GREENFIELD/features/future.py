@@ -72,9 +72,9 @@ def run(frames, fps: float, request: FutureRequest, artifacts: RunArtifacts) -> 
         # Relative paths let the saved-run loader reconstruct the local viewer.
         metadata["viewer"] = {
             "splat_paths": [str(path.relative_to(artifacts.run_dir)) for path in explicit.splats],
-            "observed_frames": len(explicit.observed_indices), "observed_fps": settings.splat_timeline_fps,
-            "forecast_frames": len(explicit.forecast_indices), "forecast_fps": settings.splat_timeline_fps,
+            "observed_frames": len(explicit.observed_indices), "observed_fps": settings.observed_splat_timeline_fps,
+            "forecast_frames": len(explicit.forecast_indices), "forecast_fps": settings.forecast_splat_timeline_fps,
             "splat_durations": list(explicit.observed_durations + explicit.forecast_durations),
-            "keyframe_fps": settings.splat_timeline_fps,
+            "keyframe_fps": settings.forecast_splat_timeline_fps,
         }
     yield FeatureResult(primary=output, metadata=metadata)

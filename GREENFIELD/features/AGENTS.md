@@ -26,6 +26,12 @@ Future View samples up to the latest 7.5 seconds at 12 fps and always writes a
 download command; request handlers always use local model files. Explicit mode
 uses a per-run Gaussian scene and a constant-velocity motion prior, which must
 never be described as a reliable physical or weather prediction. The browser scene
-viewer receives at most 13 representative temporal keyframes, then preloads them
-in one batch like 4D Replay. Do not stream add/remove operations while playback
-runs: this renderer rebuilds its scene buffer for those mutations.
+viewer preloads every exported temporal frame before enabling playback. Because the bundled
+renderer has a 32-scene shader ceiling, it holds all frames in bounded static renderer
+groups and swaps only fully resident groups at playback boundaries. Do not stream add/remove
+operations while playback runs: this renderer rebuilds its scene buffer for those mutations.
+
+
+## CUDA recovery
+
+Implicit Future View uses Diffusers CPU offload and 14-frame chunks. The owner-facing **Clear GPU memory** control releases only this dashboard process’s cached models after an OOM; it cannot free GPU memory held by another process.

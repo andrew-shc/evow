@@ -109,15 +109,16 @@ def run_explicit(frames: list[np.ndarray], artifacts: Path, settings):
                         "--source-fov", "70", "--forecast-frames", str(settings.output_frames),
                         "--forecast-fps", str(settings.output_fps), "--motion-fit-frames",
                         str(settings.motion_fit_frames), "--history-fps", str(settings.history_fps),
-                        "--splat-keyframe-fps", str(settings.splat_timeline_fps)],
+                        "--observed-splat-keyframe-fps", str(settings.observed_splat_timeline_fps),
+                        "--forecast-splat-keyframe-fps", str(settings.forecast_splat_timeline_fps)],
                        artifacts / "gaussian.log", "Generate future scenario",
                        "Fitting dynamic 3D Gaussians, then extrapolating and exporting the future scene.",
                        output / "progress.json")
     result = output / "forecast.mp4"
     if not result.is_file():
         raise RuntimeError("Explicit 3D worker did not save forecast.mp4.")
-    observed_indices = timeline_keyframe_indices(len(frames), settings.history_fps, settings.splat_timeline_fps)
-    forecast_indices = timeline_keyframe_indices(settings.output_frames, settings.output_fps, settings.splat_timeline_fps)
+    observed_indices = timeline_keyframe_indices(len(frames), settings.history_fps, settings.observed_splat_timeline_fps)
+    forecast_indices = timeline_keyframe_indices(settings.output_frames, settings.output_fps, settings.forecast_splat_timeline_fps)
     return ExplicitFutureArtifacts(
         result, ordered_future_splats(output, observed_indices, forecast_indices),
         observed_indices, forecast_indices,

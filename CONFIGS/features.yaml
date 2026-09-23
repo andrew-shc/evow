@@ -10,10 +10,12 @@ runtime:
   future_history_fps: 12
   future_output_seconds: 30
   future_output_fps: 6
-  # The orbitable 3D viewer uses representative temporal keyframes. The
-  # downloadable forecast video remains at future_output_fps.
-  future_splat_timeline_fps: 1
-  future_svd_chunk_frames: 25
+  # Keep observed history compact, but export every generated forecast state so
+  # 3D playback retains the prediction's true temporal cadence.
+  future_observed_splat_timeline_fps: 1
+  future_forecast_splat_timeline_fps: 6
+  # Smaller temporal windows cap SVD activation memory on a 24 GB GPU.
+  future_svd_chunk_frames: 14
   future_motion_fit_frames: 12
   future_max_side: 1024
   max_input_frames: 90

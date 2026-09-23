@@ -15,7 +15,18 @@ def stable_video_pipeline():
     settings = load_future_settings(); require_checkpoint(settings.checkpoint, "Stable Video Diffusion")
     import torch
     from diffusers import StableVideoDiffusionPipeline
-    return StableVideoDiffusionPipeline.from_pretrained(settings.checkpoint, local_files_only=True, variant="fp16", torch_dtype=torch.float16 if _device() == "cuda" else torch.float32).to(_device())
+    pipe = StableVideoDiffusionPipeline.from_pretrained(
+        settings.checkpoint, local_files_only=True, variant="fp16",
+        torch_dtype=torch.float16 if _device() == "cuda" else torch.float32,
+    )
+    if _device() == "cuda":
+        # Keeping the whole SVD pipeline on a 24 GB card consumes roughly 15 GB
+        # before denoising activations exist. Accelerate moves one component at a
+        # time instead, leaving headroom for inference and other dashboard work.
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe.to("cpu")
+    return pipe
 
 def generate_continuation_steps(frame: np.ndarray, count: int, seed: int):
     """Yield completed local SVD chunks, releasing all CUDA state on completion."""
@@ -32,19 +43,15 @@ def generate_continuation_steps(frame: np.ndarray, count: int, seed: int):
         yield 0, None
         for chunk in range((count + settings.chunk_frames - 1) // settings.chunk_frames):
             generator = torch.Generator(device=_device()).manual_seed(seed + chunk)
-            images = pipe(current, num_frames=settings.chunk_frames, generator=generator).frames[0]
+            images = pipe(current, num_frames=settings.chunk_frames, generator=generator,
+                          decode_chunk_size=1).frames[0]
             result.extend(np.asarray(image.convert("RGB")) for image in images)
             current = images[-1]
             yield min(len(result), count), result
     finally:
         # A LAN request must not reserve the workstation GPU after its result is saved.
-        pipe.to("cpu")
         del pipe
-        stable_video_pipeline.cache_clear()
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
+        clear_gpu_memory()
 
 
 def generate_continuation(frame: np.ndarray, count: int, seed: int) -> list[np.ndarray]:
@@ -112,3 +119,41 @@ def rank_semantic_frame_steps(frames, query):
     index.add(vectors)
     scores, indices = index.search(text, min(5, len(frames)))
     return scores[0], indices[0]
+
+
+def _cached_model_memory_release(loader, label: str) -> str | None:
+    """Move one lazily cached model off CUDA without creating a new one."""
+    if not loader.cache_info().currsize:
+        return None
+    value = loader()
+    model = value[-1] if isinstance(value, tuple) else value
+    if hasattr(model, "to"):
+        model.to("cpu")
+    if hasattr(model, "remove_all_hooks"):
+        model.remove_all_hooks()
+    loader.cache_clear()
+    return label
+
+
+def clear_gpu_memory() -> dict[str, int | list[str]]:
+    """Release cached feature models and return before/after CUDA allocator state.
+
+    This is intentionally callable from the dashboard after an OOM. It never
+    touches another process's CUDA context; it only releases this app's models.
+    """
+    import gc
+    import torch
+    before = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+    released = []
+    for loader, label in ((stable_video_pipeline, "Stable Video Diffusion"),
+                          (instruction_edit_pipeline, "InstructPix2Pix"),
+                          (siglip, "SigLIP")):
+        name = _cached_model_memory_release(loader, label)
+        if name:
+            released.append(name)
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+    after = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+    return {"before_bytes": before, "after_bytes": after, "released": released}

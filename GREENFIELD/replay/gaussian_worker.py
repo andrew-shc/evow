@@ -69,8 +69,14 @@ def main() -> None:
     parser.add_argument("--forecast-fps", type=int, default=6)
     parser.add_argument("--motion-fit-frames", type=int, default=12)
     parser.add_argument("--history-fps", type=float, default=0)
+    # Replay can keep its historical single rate. Future View uses separate
+    # observed/forecast rates so the 30-second prediction remains smooth.
     parser.add_argument("--splat-keyframe-fps", type=float, default=0)
+    parser.add_argument("--observed-splat-keyframe-fps", type=float, default=0)
+    parser.add_argument("--forecast-splat-keyframe-fps", type=float, default=0)
     args = parser.parse_args()
+    observed_splat_fps = args.observed_splat_keyframe_fps or args.splat_keyframe_fps
+    forecast_splat_fps = args.forecast_splat_keyframe_fps or args.splat_keyframe_fps
     settings = load_settings()
     request = ViewRequest(args.render_yaw, args.render_shift, args.render_fov)
     frames = np.load(args.frames)
@@ -145,8 +151,8 @@ def main() -> None:
     all_renders = []
     render_camera = torch.tensor(intrinsics(height, width, args.render_fov), device=device)
     observed_indices = (
-        timeline_keyframe_indices(count, args.history_fps, args.splat_keyframe_fps)
-        if args.splat_keyframe_fps else tuple(range(count))
+        timeline_keyframe_indices(count, args.history_fps, observed_splat_fps)
+        if observed_splat_fps else tuple(range(count))
     )
     observed_index_set = set(observed_indices)
     with torch.inference_mode():
@@ -172,8 +178,8 @@ def main() -> None:
         velocity = (centered[:, None, None] * (motion[-fit:] - motion[-fit:].mean(dim=0))).sum(dim=0) / centered.square().sum().clamp_min(1e-6)
         forecast = []
         forecast_indices = (
-            timeline_keyframe_indices(args.forecast_frames, args.forecast_fps, args.splat_keyframe_fps)
-            if args.splat_keyframe_fps else tuple(range(args.forecast_frames))
+            timeline_keyframe_indices(args.forecast_frames, args.forecast_fps, forecast_splat_fps)
+            if forecast_splat_fps else tuple(range(args.forecast_frames))
         )
         forecast_index_set = set(forecast_indices)
         with torch.inference_mode():
