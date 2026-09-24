@@ -49,10 +49,37 @@ class RunArtifacts:
 
 
 @dataclass(frozen=True)
+class ClipArtifact:
+    """One source interval and its non-destructively highlighted video.
+
+    ``source`` stays distinct from ``highlighted`` so a Text Query result can
+    become a Text Manipulation input without carrying yellow query pixels into
+    the edit model.
+    """
+
+    source: Path
+    highlighted: Path
+    start_seconds: float
+    end_seconds: float
+    score: float
+    method: str
+    # Explicit Text Query retains the directly grounded 2D result above as its
+    # reference. This optional sibling is the deliberately coarser projection
+    # through dynamic Gaussian primitives, never an implicit replacement.
+    projected_highlighted: Path | None = None
+    grounding_confidence: float | None = None
+    semantic_mask_coverage: float | None = None
+    projected_mask_coverage: float | None = None
+    projected_low_specificity: bool = False
+    selected_splats: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
 class FeatureResult:
     """Final artifact locations and structured UI data from one feature run."""
 
     primary: Path | None = None
     secondary: Path | None = None
     rows: list[list[Any]] = field(default_factory=list)
+    clips: list[ClipArtifact] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)

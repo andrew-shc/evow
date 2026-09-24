@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+testpaths = ["GREENFIELD"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["ASSETS", "AnyView-DVS", "Video-Depth-Anything", "OLD"]
+
+[tool.ruff.lint]
+# Start with correctness diagnostics. Additional style rules can be introduced
+# once the ongoing greenfield refactor has reached a stable module boundary.
+select = ["E9", "F"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

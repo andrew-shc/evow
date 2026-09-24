@@ -20,4 +20,14 @@ transformers==4.57.1
 accelerate==1.10.1
 huggingface-hub==0.34.4
 faiss-cpu==1.12.0
+# Wan VACE's UMT5 tokenizer needs SentencePiece even when it happens to be
+# present transitively in an existing development environment.
+sentencepiece>=0.2
+# Diffusers' Wan prompt normalizer imports this at inference time.
+ftfy>=6.3
+# SigLIP’s local tokenizer also requires the protobuf runtime.
+protobuf>=4.25
+# Typed YAML/configuration boundary models and the greenfield quality gate.
+pydantic==2.12.3
+ruff==0.16.8
 pytest==8.4.2

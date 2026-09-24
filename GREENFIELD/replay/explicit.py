@@ -27,7 +27,12 @@ def _worker(command: list[str], log_path: Path, stage: str, detail: str, progres
                     progress = json.loads(progress_path.read_text())
                 except json.JSONDecodeError:
                     pass
-            if progress and progress.get("step") != last_step:
+            # The Gaussian worker uses this file for more than optimizer
+            # updates. Its later export/render records report completed
+            # keyframes, not a training ``step`` or image loss. Only consume
+            # the training-shaped records here; otherwise keep the ordinary
+            # heartbeat alive until the subprocess exits.
+            if progress and "step" in progress and progress.get("step") != last_step:
                 last_step = progress["step"]
                 yield {
                     "stage": stage, "status": "running",

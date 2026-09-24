@@ -1,7 +1,7 @@
 import numpy as np
 from GREENFIELD.features.future_explicit import extrapolate_motion, ordered_future_splats
 from GREENFIELD.replay.splat import timeline_keyframe_durations, timeline_keyframe_indices
-from GREENFIELD.replay.splat_viewer import (
+from GREENFIELD.app_core.splat_viewer import (
     MAX_SCENES_PER_VIEWER,
     _boundary_percent,
     _scene_groups,
@@ -27,10 +27,22 @@ def test_constant_velocity_extrapolation_uses_recent_motion():
 
 
 def test_future_splats_are_ordered_and_complete(tmp_path):
-    for name in ("splat_000.splat", "splat_001.splat", "forecast_splat_000.splat", "forecast_splat_001.splat", "forecast_splat_002.splat"):
+    for name in (
+        "splat_000.splat",
+        "splat_001.splat",
+        "forecast_splat_000.splat",
+        "forecast_splat_001.splat",
+        "forecast_splat_002.splat",
+    ):
         (tmp_path / name).touch()
     paths = ordered_future_splats(tmp_path, observed_indices=(0, 1), forecast_indices=(0, 1, 2))
-    assert [path.name for path in paths] == ["splat_000.splat", "splat_001.splat", "forecast_splat_000.splat", "forecast_splat_001.splat", "forecast_splat_002.splat"]
+    assert [path.name for path in paths] == [
+        "splat_000.splat",
+        "splat_001.splat",
+        "forecast_splat_000.splat",
+        "forecast_splat_001.splat",
+        "forecast_splat_002.splat",
+    ]
 
 
 def test_future_splat_timeline_requires_every_frame(tmp_path):
@@ -63,6 +75,9 @@ def test_splat_viewer_preloads_full_mixed_rate_timeline_without_control_clutter(
     assert "next.viewer.start()" in html
     assert "step=&quot;0.01&quot;" in html
     assert "observedBoundaryPercent = " in html
+    assert "Reset view" not in html
+    assert "document.getElementById('reset')" not in html
+    assert "controls.reset()" not in html
 
 
 def test_full_timeline_groups_keep_every_frame_within_shader_limit():
@@ -95,10 +110,19 @@ def test_future_page_forwards_every_saved_splat_to_viewer(monkeypatch, tmp_path)
         return "viewer"
 
     monkeypatch.setattr(pages, "splat_html", fake_splat_html)
-    pages._future_viewer_update({"viewer": {
-        "splat_paths": relative_paths, "observed_frames": 72, "forecast_frames": 168,
-        "observed_fps": 12, "forecast_fps": 6, "splat_durations": [1 / 6] * len(relative_paths),
-    }}, tmp_path)
+    pages._future_viewer_update(
+        {
+            "viewer": {
+                "splat_paths": relative_paths,
+                "observed_frames": 72,
+                "forecast_frames": 168,
+                "observed_fps": 12,
+                "forecast_fps": 6,
+                "splat_durations": [1 / 6] * len(relative_paths),
+            }
+        },
+        tmp_path,
+    )
 
     assert len(captured["paths"]) == len(relative_paths)
     assert captured["durations"] == [1 / 6] * len(relative_paths)
@@ -111,11 +135,15 @@ def test_explicit_result_persists_relative_viewer_metadata(monkeypatch, tmp_path
     from GREENFIELD.features import future as future_module
     from GREENFIELD.features.future_explicit import ExplicitFutureArtifacts
 
-    settings = SimpleNamespace(output_seconds=30, output_frames=2, output_fps=6, observed_splat_timeline_fps=1, forecast_splat_timeline_fps=6)
+    settings = SimpleNamespace(
+        output_seconds=30, output_frames=2, output_fps=6, observed_splat_timeline_fps=1, forecast_splat_timeline_fps=6
+    )
     forecast = tmp_path / "explicit" / "forecast.mp4"
-    splats = (tmp_path / "explicit" / "splat_000.splat",
-              tmp_path / "explicit" / "forecast_splat_000.splat",
-              tmp_path / "explicit" / "forecast_splat_001.splat")
+    splats = (
+        tmp_path / "explicit" / "splat_000.splat",
+        tmp_path / "explicit" / "forecast_splat_000.splat",
+        tmp_path / "explicit" / "forecast_splat_001.splat",
+    )
     monkeypatch.setattr(future_module, "load_future_settings", lambda: settings)
 
     def fake_explicit(frames, artifacts, settings):
@@ -125,12 +153,20 @@ def test_explicit_result_persists_relative_viewer_metadata(monkeypatch, tmp_path
 
     monkeypatch.setattr(future_module, "run_explicit", fake_explicit)
 
-    events = list(future_module.run([np.zeros((2, 2, 3), dtype=np.uint8)], 12,
-                                    future_module.FutureRequest("explicit", 0), RunArtifacts(tmp_path)))
+    events = list(
+        future_module.run(
+            [np.zeros((2, 2, 3), dtype=np.uint8)],
+            12,
+            future_module.FutureRequest("explicit", 0),
+            RunArtifacts(tmp_path),
+        )
+    )
     result = events[-1]
-    assert result.metadata["viewer"]["splat_paths"] == ["explicit/splat_000.splat",
-                                                         "explicit/forecast_splat_000.splat",
-                                                         "explicit/forecast_splat_001.splat"]
+    assert result.metadata["viewer"]["splat_paths"] == [
+        "explicit/splat_000.splat",
+        "explicit/forecast_splat_000.splat",
+        "explicit/forecast_splat_001.splat",
+    ]
     assert result.metadata["viewer"]["observed_fps"] == 1
     assert result.metadata["viewer"]["forecast_fps"] == 6
     assert result.metadata["viewer"]["keyframe_fps"] == 6

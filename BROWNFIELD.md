@@ -15,3 +15,4 @@ Status legend: not started | partial | migrated
 
 - 2026-09-22: Added declarative local Diffusers, Transformers/SigLIP, and FAISS feature adapters. Model setup remains an explicit owner action and all generated data stays under `ASSETS/`.
 - 2026-09-22: Future View explicit forecasting reuses the Video Depth Anything and gsplat replay workers with all per-run scene data redirected to `ASSETS/future/runs/`; both vendored folders remain **partial**.
+- 2026-09-23: Text Query and Text Manipulation explicit modes call the existing Video Depth Anything/gsplat Greenfield workers through an episode-scoped atomic cache at `ASSETS/scenes/`. No vendored source was changed; raw/highlighted clips, generated edits, and copied viewer splats remain under their owning `ASSETS/<feature>/runs/` directories. `Video-Depth-Anything/` remains **partial**.

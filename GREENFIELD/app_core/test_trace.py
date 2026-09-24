@@ -58,3 +58,14 @@ def test_ui_derives_stage_time_for_legacy_events() -> None:
     spec = StageSpec("Generate", "purpose", "", "", "", "", "", "")
     legacy = {"stage": "Generate", "status": "complete", "detail": "done", "elapsed_seconds": 7.5}
     assert stage_label(0, spec, legacy, stage_started_at=2.0)[0].endswith("5.50s")
+
+
+def test_trace_normalizes_a_relative_root_for_preview_serialization(monkeypatch, tmp_path: Path) -> None:
+    """Dashboard callers may supply a relative ASSETS root without breaking saved previews."""
+    monkeypatch.chdir(tmp_path)
+    trace = FeatureTrace(Path("relative-assets"), "selection", "implicit", {})
+    preview = trace.artifacts.file("previews/frame.png")
+    preview.touch()
+    trace.add(StageEvent("Save", "running", "saved", preview=preview))
+
+    assert trace.run_dir.is_absolute()

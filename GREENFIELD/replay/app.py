@@ -12,7 +12,7 @@ os.environ.setdefault("GRADIO_TEMP_DIR", str(settings.temp_root))
 import gradio as gr
 
 from .run import execute_run, list_saved_runs, load_saved_run
-from .splat_viewer import empty_splat_html, splat_html
+from GREENFIELD.app_core.splat_viewer import empty_splat_html, splat_html
 from .workflow import workflow_card_html, workflow_header
 
 from GREENFIELD.app_core.ui import source_and_saved_controls
@@ -207,7 +207,7 @@ def build_app() -> gr.Blocks:
                 gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
                 workflow_headers = []
                 workflow_cards = []
-                with gr.Accordion("", open=False, elem_classes="internal-flow") as internals:
+                with gr.Accordion("", open=False, elem_classes="internal-flow"):
                     for index, value in enumerate(_empty_workflow_cards("explicit")):
                         label, state_class = workflow_header({"mode": "explicit", "events": []}, index)
                         with gr.Accordion(label, open=False, elem_classes=["evow-stage", state_class]) as workflow_header_component:
@@ -250,6 +250,8 @@ def _allowed_paths() -> list[str]:
     HTTP 403 before the browser renderer ever saw their bytes.
     """
     return [str(settings.run_root), str(settings.assets / "future" / "runs"),
+            str(settings.assets / "selection" / "runs"), str(settings.assets / "editing" / "runs"),
+            str(settings.assets / "scenes"),
             str(settings.root / "GREENFIELD"), str(Path(__file__).with_name("gaussian_viewer.bundle.js"))]
 
 

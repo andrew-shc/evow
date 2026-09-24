@@ -31,7 +31,6 @@ def stable_video_pipeline():
 def generate_continuation_steps(frame: np.ndarray, count: int, seed: int):
     """Yield completed local SVD chunks, releasing all CUDA state on completion."""
     require_package("PIL", "models")
-    import gc
     import torch
     from PIL import Image
     settings = load_future_settings()
@@ -64,63 +63,6 @@ def generate_continuation(frame: np.ndarray, count: int, seed: int) -> list[np.n
     return generated[:count]
 
 
-@lru_cache(maxsize=1)
-def instruction_edit_pipeline():
-    require_package("diffusers", "models")
-    from pathlib import Path
-    root = load_future_settings().root; checkpoint = root / "ASSETS" / "checkpoints" / "instruct-pix2pix"; require_checkpoint(checkpoint, "InstructPix2Pix")
-    import torch
-    from diffusers import StableDiffusionInstructPix2PixPipeline
-    return StableDiffusionInstructPix2PixPipeline.from_pretrained(checkpoint, local_files_only=True, torch_dtype=torch.float16 if _device() == "cuda" else torch.float32).to(_device())
-
-def edit_frame(frame, prompt, seed):
-    from PIL import Image
-    import torch
-    return np.asarray(instruction_edit_pipeline()(prompt=prompt, image=Image.fromarray(frame), generator=torch.manual_seed(seed), num_inference_steps=20).images[0].convert("RGB"))
-
-@lru_cache(maxsize=1)
-def siglip():
-    require_package("transformers", "models")
-    from pathlib import Path
-    from transformers import AutoModel, AutoProcessor
-    checkpoint = load_future_settings().root / "ASSETS" / "checkpoints" / "siglip"; require_checkpoint(checkpoint, "SigLIP")
-    return AutoProcessor.from_pretrained(checkpoint, local_files_only=True), AutoModel.from_pretrained(checkpoint, local_files_only=True).to(_device())
-
-def rank_semantic_frames(frames, query):
-    import faiss, torch
-    processor, model = siglip(); device = next(model.parameters()).device
-    with torch.inference_mode():
-        text = model.get_text_features(**processor(text=[query], padding="max_length", return_tensors="pt").to(device)).cpu().numpy().astype(np.float32)
-        vectors = np.asarray([model.get_image_features(**processor(images=frame, return_tensors="pt").to(device)).cpu().numpy()[0] for frame in frames], dtype=np.float32)
-    vectors /= np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12); text /= np.maximum(np.linalg.norm(text, axis=1, keepdims=True), 1e-12)
-    index = faiss.IndexFlatIP(vectors.shape[1]); index.add(vectors); scores, indices = index.search(text, min(5, len(frames))); return scores[0], indices[0]
-
-
-def rank_semantic_frame_steps(frames, query):
-    """Yield per-frame SigLIP progress, then return the local FAISS ranking."""
-    import faiss, torch
-    processor, model = siglip()
-    device = next(model.parameters()).device
-    with torch.inference_mode():
-        text = model.get_text_features(
-            **processor(text=[query], padding="max_length", return_tensors="pt").to(device)
-        ).cpu().numpy().astype(np.float32)
-        vectors = []
-        for completed, frame in enumerate(frames, 1):
-            vector = model.get_image_features(
-                **processor(images=frame, return_tensors="pt").to(device)
-            ).cpu().numpy()[0]
-            vectors.append(vector)
-            yield completed, len(frames)
-    vectors = np.asarray(vectors, dtype=np.float32)
-    vectors /= np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12)
-    text /= np.maximum(np.linalg.norm(text, axis=1, keepdims=True), 1e-12)
-    index = faiss.IndexFlatIP(vectors.shape[1])
-    index.add(vectors)
-    scores, indices = index.search(text, min(5, len(frames)))
-    return scores[0], indices[0]
-
-
 def _cached_model_memory_release(loader, label: str) -> str | None:
     """Move one lazily cached model off CUDA without creating a new one."""
     if not loader.cache_info().currsize:
@@ -145,13 +87,17 @@ def clear_gpu_memory() -> dict[str, int | list[str]]:
     import torch
     before = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
     released = []
-    for loader, label in ((stable_video_pipeline, "Stable Video Diffusion"),
-                          (instruction_edit_pipeline, "InstructPix2Pix"),
-                          (siglip, "SigLIP")):
+    for loader, label in ((stable_video_pipeline, "Stable Video Diffusion"),):
         name = _cached_model_memory_release(loader, label)
         if name:
             released.append(name)
     gc.collect()
+    # Text Query and Wan VACE keep separate, local-only caches so their
+    # optional dependencies do not affect Future View imports.
+    from .text_models import release_text_models
+    from .video_edit import release_video_edit_model
+    released.extend(release_text_models())
+    released.extend(release_video_edit_model())
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()

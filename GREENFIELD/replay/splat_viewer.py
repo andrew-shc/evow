@@ -14,8 +14,7 @@ MAX_SCENES_PER_VIEWER = 32
 
 def _scene_groups(sources: list[str]) -> list[list[str]]:
     """Split a fully resident timeline into shader-safe renderer groups."""
-    return [sources[index:index + MAX_SCENES_PER_VIEWER]
-            for index in range(0, len(sources), MAX_SCENES_PER_VIEWER)]
+    return [sources[index : index + MAX_SCENES_PER_VIEWER] for index in range(0, len(sources), MAX_SCENES_PER_VIEWER)]
 
 
 def _boundary_percent(frame_durations: list[float], observed_frame_count: int | None) -> float | None:
@@ -25,8 +24,9 @@ def _boundary_percent(frame_durations: list[float], observed_frame_count: int | 
     return sum(frame_durations[:observed_frame_count]) / sum(frame_durations) * 100
 
 
-def splat_html(paths: list[str], frame_durations: list[float] | None = None,
-               observed_frame_count: int | None = None) -> str:
+def splat_html(
+    paths: list[str], frame_durations: list[float] | None = None, observed_frame_count: int | None = None
+) -> str:
     """Build a viewer that fully preloads a temporal Gaussian timeline.
 
     Every supplied splat is downloaded and built before the player can be
@@ -71,7 +71,7 @@ button:disabled{{cursor:wait;opacity:.65}}
 #timeline::-webkit-slider-thumb{{appearance:none;width:14px;height:14px;margin-top:-4.5px;border:1px solid #d7e4ee;border-radius:50%;background:#eef4fa}}
 #timeline::-moz-range-thumb{{width:12px;height:12px;border:1px solid #d7e4ee;border-radius:50%;background:#eef4fa}}
 </style></head><body><div id="scene-host"></div><div id="loading" aria-label="Preparing 3D replay"><span></span></div>
-<div id="controls"><button id="play" disabled>Play</button><button id="reset" disabled>Reset view</button><input id="timeline" aria-label="3D scene timeline" type="range" min="0" max="0" value="0" step="0.01" disabled></div>
+<div id="controls"><button id="play" disabled>Play</button><input id="timeline" aria-label="3D scene timeline" type="range" min="0" max="0" value="0" step="0.01" disabled></div>
 <script type="module">
 import * as Splats from {json.dumps(module)};
 const sourceGroups = {json.dumps(source_groups)};
@@ -79,7 +79,7 @@ const frameDurations = {json.dumps(frame_durations)};
 const observedBoundaryPercent = {json.dumps(boundary_percent)};
 const sceneHost = document.getElementById('scene-host');
 const loading = document.getElementById('loading'), timeline = document.getElementById('timeline');
-const play = document.getElementById('play'), reset = document.getElementById('reset');
+const play = document.getElementById('play');
 const groupStarts = [], frameStarts = [];
 let totalDuration = 0, groups = [], activeGroup = -1, currentTime = 0, playing = false, timer;
 
@@ -174,10 +174,6 @@ async function preloadGroup(paths) {{
 }}
 
 timeline.addEventListener('input', () => {{ stop(); setTime(timeline.value); }});
-reset.addEventListener('click', () => {{
-  groups.forEach((group) => {{ if (group.viewer.controls) group.viewer.controls.reset(); }});
-  if (activeGroup >= 0) groups[activeGroup].viewer.forceRenderNextFrame();
-}});
 play.addEventListener('click', () => {{
   if (playing) {{ stop(); return; }}
   playing = true; play.textContent = 'Pause'; scheduleNextFrame();
@@ -194,7 +190,7 @@ play.addEventListener('click', () => {{
       timeline.style.setProperty('--boundary', observedBoundaryPercent + '%');
     }}
     setTime(0);
-    timeline.disabled = false; play.disabled = false; reset.disabled = false;
+    timeline.disabled = false; play.disabled = false;
     loading.remove();
   }} catch (error) {{
     loading.classList.add('error'); loading.textContent = 'Unable to prepare 3D replay.';
@@ -210,6 +206,8 @@ play.addEventListener('click', () => {{
 
 def empty_splat_html() -> str:
     """Keep the 3D panel visibly reserved before an explicit run creates a scene."""
-    return ('<div style="height:480px;display:grid;place-items:center;border:2px solid #58748d;'
-            'border-radius:10px;background:#101b27;color:#e8f0f5;font:15px system-ui">'
-            '</div>')
+    return (
+        '<div style="height:480px;display:grid;place-items:center;border:2px solid #58748d;'
+        'border-radius:10px;background:#101b27;color:#e8f0f5;font:15px system-ui">'
+        "</div>"
+    )

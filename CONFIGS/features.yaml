@@ -2,7 +2,13 @@
 models:
   future_video: stabilityai/stable-video-diffusion-img2vid-xt
   semantic_retrieval: google/siglip-base-patch16-224
-  instruction_edit: timbrooks/instruct-pix2pix
+  # Text Query combines video-language retrieval, open-vocabulary grounding,
+  # and temporally stable masks. Transformers already provides all adapters.
+  text_grounding: IDEA-Research/grounding-dino-tiny
+  video_segmentation: facebook/sam2.1-hiera-tiny
+  # VACE accepts a source video and an inpainting mask, preserving temporal
+  # context where the old independent InstructPix2Pix path could not.
+  video_edit: Wan-AI/Wan2.1-VACE-1.3B-diffusers
 runtime:
   # Future View always uses the end of the supplied episode. Keeping cadence
   # explicit makes the Gaussian motion prior comparable across source videos.
@@ -21,3 +27,22 @@ runtime:
   max_input_frames: 90
   future_max_seconds: 3
   deterministic_seed: 0
+  # Text Query searches one practical upload. Scores are sparse, but exact
+  # source clips are decoded for the final ranked intervals.
+  query_max_source_seconds: 300
+  query_sample_fps: 2
+  query_clip_seconds: 4
+  query_result_fps: 12
+  query_max_results: 5
+  query_explicit_candidate_pool: 8
+  # Text Manipulation runs one replay-sized episode. Wan VACE supports 81
+  # frames and provides substantially stronger temporal consistency.
+  text_episode_fps: 12
+  text_episode_max_frames: 81
+  text_source_fov_degrees: 70
+  # Bump when Gaussian worker reconstruction semantics change so old scenes are never reused.
+  text_scene_cache_version: dynamic-gaussian-v1
+  text_edit_max_side: 832
+  # Keep the VACE workload inside the RTX 3090 Ti envelope while retaining source aspect ratio.
+  text_edit_max_height: 480
+  text_vace_steps: 30

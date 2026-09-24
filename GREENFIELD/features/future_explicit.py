@@ -54,7 +54,6 @@ def _worker(command: list[str], log_path: Path, stage: str, detail: str, progres
         process = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT)
         started = time.monotonic()
         last_step = None
-        last_heartbeat = started
         yield StageEvent(stage, "running", detail, metrics={"log_file": log_path.name, "log_tail": _log_tail(log_path)})
         while process.poll() is None:
             time.sleep(0.05)

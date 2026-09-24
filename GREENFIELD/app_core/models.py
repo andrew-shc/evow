@@ -10,7 +10,7 @@ def require_package(package: str, extra: str) -> None:
         raise RuntimeError(f"{package} is required for this mode. Install the '{extra}' feature dependencies with: conda run -n evow python -m pip install -r CONFIGS/replay_requirements.txt")
 
 
-def require_checkpoint(path: Path, label: str) -> None:
+def require_checkpoint(path: Path, label: str, setup_command: str = "conda run -n evow python -m GREENFIELD.features.future_setup") -> None:
     """Make model setup an owner action before GPU work begins."""
     if not path.is_dir() and not path.is_file():
-        raise RuntimeError(f"{label} weights are not installed at {path}. For Future View run: conda run -n evow python -m GREENFIELD.features.future_setup")
+        raise RuntimeError(f"{label} weights are not installed at {path}. Install them with: {setup_command}")

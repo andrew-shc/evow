@@ -18,7 +18,7 @@ Make a view observed by one camera around the clock explorable: revisit recorded
 
 ## Current status and next steps
 
-The first feature, 4D replay, now has a LAN Gradio application in `replay/` with implicit AnyView generation and explicit dynamic Gaussian scenes. It accepts an uploaded or browser-recorded clip, runs one GPU job at a time, saves stage traces and results, and can replay completed runs. Continuous capture, the month archive, the remaining six modes, and the curated public showcase are still planned in [ROADMAP.md](ROADMAP.md).
+All four feature pages now have a private LAN implementation: 4D Replay, Future View, Text Query, and Text Manipulation. Replay uses implicit AnyView and explicit dynamic Gaussian scenes; the text modes reuse those scene workers alongside local SigLIP, Grounding DINO, SAM2, and Wan VACE adapters. Each page saves a replayable trace and run-owned artifacts. Continuous capture, the month archive, and the curated public showcase remain planned in [ROADMAP.md](ROADMAP.md).
 
 ## Pipeline map
 
@@ -38,3 +38,9 @@ Replay runs and output assets are saved under `ASSETS/replay/runs/` and excluded
 ## Run Protocols
 
 Run the private replay app with `conda activate evow` and `python -m GREENFIELD.replay.app` from the repo root. It listens on the current LAN address `192.168.4.254:7860` by default; `EVOW_BIND_HOST` overrides the bind address. Successful runs save their sampled input, ordered stage updates, timings, meshes or generated video, and final result. Curate completed traces for the later public application.
+
+## Text Query and Text Manipulation
+
+Text Query searches one fixed-camera source up to five minutes and writes up to five non-overlapping, four-second raw and highlighted clips under `ASSETS/selection/runs/`. Its yellow binary overlay is presentation-only; the raw clip is the only query handoff accepted by Text Manipulation. Text Manipulation accepts an upload or raw query clip up to 81 frames at 12 fps, writes generated outputs under `ASSETS/editing/runs/`, and labels them as generated. Explicit text runs cache complete episode-scale Gaussian scenes atomically under `ASSETS/scenes/`, keyed by source content and reconstruction settings.
+
+The owner installs text-model snapshots with `conda run -n evow python -m GREENFIELD.features.text_setup`; browser requests use local files only and report that command when a snapshot is absent or incomplete. All text-mode geometry is estimated from the single fixed camera and must never be presented as observed hidden structure.

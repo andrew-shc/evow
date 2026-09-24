@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from html import escape
 import json
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
