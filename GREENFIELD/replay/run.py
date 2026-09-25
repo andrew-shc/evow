@@ -85,6 +85,8 @@ def execute_run(
     # trace can mark the stage users saw running rather than only a generic run.
     active_stage = "Input clip"
     try:
+        trace.add("Input clip", "running", "Decoding the requested stationary-view episode.")
+        yield _snapshot(run_dir, trace, "Preparing input clip.")
         frames = extract_clip(video_path, start_seconds, frame_count, settings, run_dir)
         trace.update_request({"stationary_view_assumed": True})
         trace.add(

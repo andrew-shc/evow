@@ -10,6 +10,7 @@ from typing import Any
 class RunTrace:
     def __init__(self, run_dir: Path, mode: str, request: dict[str, Any]) -> None:
         self.run_dir = run_dir
+        self._stage_started: dict[str, float] = {}
         self.started = time.monotonic()
         self.record: dict[str, Any] = {
             "run_id": run_dir.name,
@@ -33,11 +34,13 @@ class RunTrace:
         preview: Path | None = None,
         metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        now = time.monotonic()
+        stage_started = self._stage_started.setdefault(stage, now)
         event: dict[str, Any] = {
             "stage": stage,
             "status": status,
             "detail": detail,
-            "elapsed_seconds": round(time.monotonic() - self.started, 2),
+            "elapsed_seconds": round(now - self.started, 2), "stage_elapsed_seconds": round(now - stage_started, 2),
         }
         if preview is not None:
             event["preview"] = str(preview.relative_to(self.run_dir))

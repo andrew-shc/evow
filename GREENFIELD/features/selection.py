@@ -8,6 +8,7 @@ import numpy as np
 
 from GREENFIELD.app_core.contracts import ClipArtifact, FeatureResult, RunArtifacts, StageEvent, StageSpec
 from GREENFIELD.app_core.media import write_video
+from GREENFIELD.app_core.model_catalog import GROUNDING_DINO, GSPLAT, SAM2, SIGLIP, VIDEO_DEPTH_ANYTHING
 from .scene_cache import ensure_scene_steps
 from .scene_masks import export_selected_splats, lift_masks, project_primitive_mask
 from .text_media import read_interval, read_uniform_samples, source_digest, timestamp_label
@@ -23,9 +24,9 @@ LOW_SPECIFICITY_COVERAGE = 0.65
 
 STAGES = (
     StageSpec("Inspect source video", "Validate the bounded source video and sample retrieval frames.", "GREENFIELD/features/text_media.py", "read_uniform_samples", "source video", "sparse RGB frames · timestamps", "Source"),
-    StageSpec("Retrieve relevant intervals", "Embed sampled video frames and query text in one local vision-language space.", "GREENFIELD/features/text_models.py", "semantic_scores_steps", "frames · query", "ranked non-overlapping source windows", "Text · Methodology"),
-    StageSpec("Ground and track binary target", "Use text grounding and SAM2 to produce a binary mask through each candidate clip.", "GREENFIELD/features/text_segmentation.py", "ground_and_track", "candidate frames · query", "tracked binary masks", "Text"),
-    StageSpec("Resolve selected method", "Use direct video masks for Implicit 3D or lift them to cached Gaussian primitives for Explicit 3D.", "GREENFIELD/features/scene_masks.py", "lift_masks", "masks · selected methodology", "2D or projected 3D binary masks", "Methodology"),
+    StageSpec("Retrieve relevant intervals", "Embed sampled video frames and query text with local SigLIP, then rank temporal windows.", "GREENFIELD/features/text_models.py", "semantic_scores_steps", "frames · query", "ranked non-overlapping source windows", "Text · Methodology", model_refs=(SIGLIP,)),
+    StageSpec("Ground and track binary target", "Use Grounding DINO and SAM2 to produce a binary mask through each candidate clip.", "GREENFIELD/features/text_segmentation.py", "ground_and_track", "candidate frames · query", "tracked binary masks", "Text", model_refs=(GROUNDING_DINO, SAM2)),
+    StageSpec("Resolve selected method", "Use direct video masks for Implicit 3D or lift them through cached 4D Gaussian primitives for Explicit 3D.", "GREENFIELD/features/scene_masks.py", "lift_masks", "masks · selected methodology", "2D or projected 3D binary masks", "Methodology", model_refs=(VIDEO_DEPTH_ANYTHING, GSPLAT)),
     StageSpec("Save highlighted clips", "Encode raw and highlighted source clips without any spatial crop.", "GREENFIELD/app_core/media.py", "write_video", "source frames · binary masks", "source.mp4 · highlighted.mp4 · trace.json", "Search"),
 )
 
@@ -72,6 +73,8 @@ def run(source: str, request: SelectionRequest, artifacts: RunArtifacts) -> Iter
     """Search one source video and save up to five non-cropped highlighted clips."""
     request.validate()
     settings = load_text_settings()
+    yield StageEvent("Inspect source video", "running", "Opening the bounded source video and scheduling uniform retrieval samples.")
+
     sparse_frames, timestamps, info = read_uniform_samples(source, settings.query_sample_fps, settings.query_max_source_seconds)
     yield StageEvent(
         "Inspect source video", "complete",
@@ -101,6 +104,12 @@ def run(source: str, request: SelectionRequest, artifacts: RunArtifacts) -> Iter
     for candidate in candidates:
         if request.mode == "implicit" and len(clips) >= settings.query_max_results:
             break
+        # Decode is part of the candidate-level grounding operation. Report it
+        # first so this stage remains active throughout the whole operation.
+        yield StageEvent(
+            "Ground and track binary target", "running",
+            f"Decoding and grounding candidate {len(clips) + 1} at {timestamp_label(candidate.start_seconds)}.",
+        )
         clip_frames, clip_fps = read_interval(
             source, candidate.start_seconds, candidate.end_seconds - candidate.start_seconds, settings.query_result_fps
         )

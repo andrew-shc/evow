@@ -20,6 +20,19 @@ class StageSpec:
     inputs: str = ""
     outputs: str = ""
     controls: str = ""
+    # Static model provenance is kept with the stage contract so the UI never
+    # guesses which implementation produced a live execution tick.
+    model_refs: tuple["ModelReference", ...] = ()
+
+
+@dataclass(frozen=True)
+class ModelReference:
+    """One selected model dependency with its primary project URL."""
+
+    name: str
+    identifier: str
+    role: str
+    url: str
 
 
 @dataclass(frozen=True)

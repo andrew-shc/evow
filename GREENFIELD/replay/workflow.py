@@ -2,11 +2,12 @@
 
 from dataclasses import dataclass
 from html import escape
-import json
 from typing import Any
 from urllib.parse import quote
 
 from .settings import load_settings
+from GREENFIELD.app_core.model_catalog import ANYVIEW, GSPLAT, VIDEO_DEPTH_ANYTHING
+from GREENFIELD.app_core.ui import detail_rows
 
 
 @dataclass(frozen=True)
@@ -28,15 +29,15 @@ SHARED = (
     Step("Extract episode", "Decode one short RGB episode from the source at 12 fps.", "GREENFIELD/replay/clip.py", "extract_clip() → cv2.VideoCapture → write_video()", "source path · start seconds · 13/29/41 frames", "frames.npy · source.mp4 · source.png", "Clip start · episode length", ("Input clip",)),
 )
 EXPLICIT = (
-    Step("Infer depth through time", "Estimate temporally consistent relative depth for the observed view.", "GREENFIELD/replay/depth_worker.py", "depth_worker.main() → VideoDepthAnything.infer_video_depth()", "frames.npy", "explicit/depths.npz", "Representation method: Explicit", ("Video depth prior", "3D initialization")),
-    Step("Initialize 3D Gaussians", "Lift observed pixels into native 3D Gaussian primitives with initial motion.", "GREENFIELD/replay/gaussian_worker.py", "_initial_gaussians() → Farneback optical flow", "RGB frames · depths.npz", "centers · scales · colors · opacity · per-frame motion", "Representation method: Explicit", ("Gaussian initialization", "3D initialization")),
-    Step("Fit the 4D scene", "Optimize one persistent Gaussian scene across every selected time step.", "GREENFIELD/replay/gaussian_worker.py", "gsplat.rasterization() → torch.optim.Adam → progress.json", "Gaussian state · observed frames", "optimized shared primitives and temporal deformation", "Episode length sets the observed motion window", ("4D Gaussian fitting",)),
+    Step("Infer depth through time", "Video Depth Anything (depth-anything/Video-Depth-Anything) estimates temporally consistent relative depth.", "GREENFIELD/replay/depth_worker.py", "depth_worker.main() → VideoDepthAnything.infer_video_depth()", "frames.npy", "explicit/depths.npz", "Representation method: Explicit", ("Video depth prior", "3D initialization")),
+    Step("Initialize 3D Gaussians", "gsplat (nerfstudio-project/gsplat) lifts observed pixels into native 3D Gaussian primitives with initial motion.", "GREENFIELD/replay/gaussian_worker.py", "_initial_gaussians() → Farneback optical flow", "RGB frames · depths.npz", "centers · scales · colors · opacity · per-frame motion", "Representation method: Explicit", ("Gaussian initialization", "3D initialization")),
+    Step("Fit the 4D scene", "gsplat (nerfstudio-project/gsplat) optimizes one persistent Gaussian scene across every selected time step.", "GREENFIELD/replay/gaussian_worker.py", "gsplat.rasterization() → torch.optim.Adam → progress.json", "Gaussian state · observed frames", "optimized shared primitives and temporal deformation", "Episode length sets the observed motion window", ("4D Gaussian fitting",)),
     Step("Render requested view", "Render the learned 4D scene from the requested virtual camera.", "GREENFIELD/replay/gaussian_worker.py", "gsplat.rasterization() → splat.save_splat() → imageio video writer", "scene state · yaw · lateral shift · field of view", "rendered.mp4 · scene.pt · splat_####.splat", "Turn · sideways offset · field of view", ("Native 4D scene",)),
 )
 IMPLICIT = (
     Step("Prepare camera episode", "Package frames and target camera for the video generator.", "GREENFIELD/replay/implicit.py", "prepare_episode() → camera matrices", "RGB episode · virtual camera", "model episode and camera conditioning", "Representation method: Implicit", ("Camera setup",)),
-    Step("Encode video and camera", "Transform images and camera rays into model conditioning.", "GREENFIELD/replay/anyview_worker.py", "VAE encode_rgb() → prepare_cams_latent()", "RGB frames · camera matrices", "video latents · Plücker camera rays", "Representation method: Implicit", ("Video diffusion",)),
-    Step("Generate nearby video", "Denoise a target-view video conditioned on the source episode.", "GREENFIELD/replay/anyview_worker.py", "AnyView pipeline.generate()", "conditioning latents · virtual camera", "generated video latents", "Turn · sideways offset · field of view", ("Video diffusion",)),
+    Step("Encode video and camera", "AnyView-DVS encodes images and Plücker camera rays into model conditioning.", "GREENFIELD/replay/anyview_worker.py", "VAE encode_rgb() → prepare_cams_latent()", "RGB frames · camera matrices", "video latents · Plücker camera rays", "Representation method: Implicit", ("Video diffusion",)),
+    Step("Generate nearby video", "AnyView-DVS denoises a target-view video conditioned on the source episode.", "GREENFIELD/replay/anyview_worker.py", "AnyView pipeline.generate()", "conditioning latents · virtual camera", "generated video latents", "Turn · sideways offset · field of view", ("Video diffusion",)),
     Step("Decode result", "Decode and save the generated target-view video.", "GREENFIELD/replay/anyview_worker.py", "VAE decode_rgb() → imageio.mimsave()", "generated latents", "rendered.mp4 · preview PNGs", "No additional control", ("Generated view",)),
 )
 FINAL = Step("Save run", "Persist all run settings, events, metrics, previews, and output locations.", "GREENFIELD/replay/trace.py", "RunTrace.add() → trace.json · result.json", "trace events · generated artifacts", "replayable run directory under ASSETS/replay/runs", "Load a saved run to inspect it again", ("Run complete",))
@@ -59,16 +60,19 @@ def _event(step: Step, latest: dict[str, dict[str, Any]]) -> dict[str, Any] | No
 
 
 def _state(index: int, steps: tuple[Step, ...], latest: dict[str, dict[str, Any]]) -> str:
-    """Show waiting, active, complete, or failed without inventing progress."""
-    if latest.get("Run complete", {}).get("status") == "complete":
-        return "complete"
+    """Show only states explicitly recorded for this stage.
+
+    A later worker event cannot prove an earlier logical operation completed.
+    The trace producer, rather than this presentation layer, owns terminal
+    transitions.
+    """
     event = _event(steps[index], latest)
     if event:
         # Trace producers historically called terminal failures "error". Keep
         # that wire format, but present one stable user-facing state everywhere.
         status = str(event.get("status", "waiting"))
         return "failed" if status == "error" else status
-    return "complete" if any(_event(later, latest) for later in steps[index + 1:]) else "waiting"
+    return "waiting"
 
 
 def _stage_duration(step: Step, events: list[dict[str, Any]], event: dict[str, Any] | None) -> str:
@@ -76,6 +80,8 @@ def _stage_duration(step: Step, events: list[dict[str, Any]], event: dict[str, A
     if event is None:
         return "—"
     matching = [entry for entry in events if entry.get("stage") in step.trace_stages]
+    if "stage_elapsed_seconds" in event:
+        return f"{float(event['stage_elapsed_seconds']):.2f}s"
     started = float(matching[0].get("elapsed_seconds", 0)) if matching else 0.0
     return f"{max(0.0, float(event.get('elapsed_seconds', 0)) - started):.2f}s"
 
@@ -155,15 +161,14 @@ def _source_line(step: Step) -> int:
 
 
 def _program_contract(step: Step) -> str:
-    """Serialize static implementation facts in a readable, copyable form."""
-    return escape(json.dumps({
-        "source_file": f"{step.source_file}:{_source_line(step)}",
-        "source_location": _source_location(step),
-        "function_chain": step.function_chain,
-        "inputs": step.inputs,
-        "outputs": step.outputs,
-        "editable_control": step.controls,
-    }, indent=2))
+    """Render implementation facts as labeled rows instead of a JSON payload."""
+    return detail_rows((("Inputs", step.inputs), ("Outputs", step.outputs), ("Editable control", step.controls)))
+
+
+def _live_record(event: dict[str, Any] | None, duration: str) -> str:
+    """Show only useful stage timing and emitted metrics; request inputs are already on the page."""
+    metrics = (event or {}).get("metrics") or {}
+    return detail_rows({"Stage time": duration, **{key: value for key, value in metrics.items() if key != "log_tail"}})
 
 
 def workflow_html(trace: dict[str, Any]) -> str:
@@ -176,10 +181,6 @@ def workflow_html(trace: dict[str, Any]) -> str:
         event = _event(step, latest)
         state = _state(index, steps, latest)
         detail = str(event.get("detail", "Waiting for this operation.")) if event else "Waiting for this operation."
-        runtime = {"status": state, "elapsed_seconds": event.get("elapsed_seconds", 0) if event else 0,
-                   "metrics": event.get("metrics") if event else None, "event": event or None}
-        if index == 0:
-            runtime["run_request"] = trace.get("request", {})
         open_attribute = " open" if event and state in {"running", "error"} else ""
         source_url = _code_link(step)
         source_display = f"{step.source_file}:{_source_line(step)}"
@@ -191,10 +192,10 @@ def workflow_html(trace: dict[str, Any]) -> str:
             '<div class="evow-detail">'
             '<section><h4>Program</h4>'
             f'<p><a class="evow-code-link" href="{escape(source_url, quote=True)}" target="_blank" rel="noopener">{escape(source_display)}</a></p><p><code>{escape(step.function_chain)}</code></p>'
-            f'<pre>{_program_contract(step)}</pre></section>'
+            f'{_program_contract(step)}</section>'
             '<section><h4>Live run record</h4>'
             f'<p>{escape(detail)}</p>{_preview(trace, event)}'
-            f'<pre>{escape(json.dumps(runtime, indent=2))}</pre></section>'
+            f'{_live_record(event, duration)}</section>'
             '</div></details>'
         )
     return f'''<section class="evow-flow"><style>
@@ -208,6 +209,21 @@ def workflow_html(trace: dict[str, Any]) -> str:
 def workflow_labels(mode: str) -> tuple[str, ...]:
     """Return stable accordion labels for the selected execution path."""
     return tuple(f"{index + 1}. {step.name}" for index, step in enumerate(_steps(mode)))
+
+
+def _stage_model_html(step: Step) -> str:
+    """Attach the exact model and primary link to the Replay stage that uses it."""
+    models = {
+        "Infer depth through time": (VIDEO_DEPTH_ANYTHING,),
+        "Initialize 3D Gaussians": (GSPLAT,),
+        "Fit the 4D scene": (GSPLAT,),
+        "Render requested view": (GSPLAT,),
+        "Encode video and camera": (ANYVIEW,),
+        "Generate nearby video": (ANYVIEW,),
+        "Decode result": (ANYVIEW,),
+    }.get(step.name, ())
+    return "".join('<p><a class="evow-code-link" href="{}" target="_blank" rel="noopener">{}</a> <code>{}</code></p>'.format(
+        escape(model.url, quote=True), escape(model.name), escape(model.identifier)) for model in models)
 
 
 def workflow_card_html(trace: dict[str, Any], index: int) -> str:
@@ -225,4 +241,6 @@ def workflow_card_html(trace: dict[str, Any], index: int) -> str:
         runtime["run_request"] = trace.get("request", {})
     source_url = _code_link(step)
     source_display = f"{step.source_file}:{_source_line(step)}"
-    return f"""<article class=\"evow-stage-card evow-{escape(state)}\"><style>.evow-stage-card{{color:#253646;line-height:1.45}}.evow-stage-card *{{box-sizing:border-box}}.evow-stage-purpose{{margin:0 0 13px;color:#526575;font-size:12px}}.evow-stage-detail{{display:grid;grid-template-columns:1fr 1fr;gap:14px}}.evow-stage-detail section{{min-width:0}}.evow-stage-detail h4{{margin:0 0 7px;font-size:12px;color:#425466;text-transform:uppercase;letter-spacing:.05em}}.evow-stage-detail p{{margin:0 0 8px}}.evow-stage-detail code{{color:#173f59;white-space:normal;overflow-wrap:anywhere;font-weight:600}}.evow-stage-detail pre{{max-height:260px;margin:0;overflow:auto;padding:9px;border:1px solid #d5dfe7;border-radius:5px;background:#f6f9fb;color:#17212b;white-space:pre-wrap;font:12px ui-monospace,SFMono-Regular,monospace}}.evow-code-link{{color:#0b5e96;text-decoration:underline;font:12px ui-monospace,SFMono-Regular,monospace}}.evow-preview{{display:block;max-width:100%;max-height:260px;margin:0 0 9px;border:1px solid #c7d4de;border-radius:5px}}</style><p class=\"evow-stage-purpose\">{escape(step.purpose)}</p><div class=\"evow-stage-detail\"><section><h4>Program</h4><p><a class=\"evow-code-link\" href=\"{escape(source_url, quote=True)}\" target=\"_blank\" rel=\"noopener\">{escape(source_display)}</a></p><p><code>{escape(step.function_chain)}</code></p><pre>{_program_contract(step)}</pre></section><section><h4>Live run record</h4><p>{escape(detail)}</p>{_preview(trace, event)}<pre>{escape(json.dumps(runtime, indent=2))}</pre></section></div></article>"""
+    model_html = _stage_model_html(step)
+    duration = f"{float(runtime['elapsed_seconds']):.2f}s" if event else "Not started"
+    return f"""<article class=\"evow-stage-card evow-{escape(state)}\"><style>.evow-stage-card{{color:#253646;line-height:1.45}}.evow-stage-card *{{box-sizing:border-box}}.evow-stage-purpose{{margin:0 0 13px;color:#526575;font-size:12px}}.evow-stage-detail{{display:grid;grid-template-columns:1fr 1fr;gap:14px}}.evow-stage-detail section{{min-width:0}}.evow-stage-detail h4{{margin:0 0 7px;font-size:12px;color:#425466;text-transform:uppercase;letter-spacing:.05em}}.evow-stage-detail p{{margin:0 0 8px}}.evow-stage-detail code{{color:#173f59;white-space:normal;overflow-wrap:anywhere;font-weight:600}}.evow-code-link{{color:#0b5e96;text-decoration:underline;font:12px ui-monospace,SFMono-Regular,monospace}}.evow-kv{{display:grid;gap:6px;margin:0}}.evow-kv div{{display:grid;grid-template-columns:minmax(110px,35%) 1fr;gap:8px}}.evow-kv dt{{color:#526575;font-size:12px}}.evow-kv dd{{margin:0;overflow-wrap:anywhere}}.evow-preview{{display:block;max-width:100%;max-height:260px;margin:0 0 9px;border:1px solid #c7d4de;border-radius:5px}}</style><p class=\"evow-stage-purpose\">{escape(step.purpose)}</p><div class=\"evow-stage-detail\"><section><h4>Program</h4><p><a class=\"evow-code-link\" href=\"{escape(source_url, quote=True)}\" target=\"_blank\" rel=\"noopener\">{escape(source_display)}</a></p><p><code>{escape(step.function_chain)}</code></p>{model_html}{_program_contract(step)}</section><section><h4>Live run record</h4><p>{escape(detail)}</p>{_preview(trace, event)}{_live_record(event, duration)}</section></div></article>"""

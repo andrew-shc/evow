@@ -78,6 +78,10 @@ def test_splat_viewer_preloads_full_mixed_rate_timeline_without_control_clutter(
     assert "Reset view" not in html
     assert "document.getElementById('reset')" not in html
     assert "controls.reset()" not in html
+    assert "ResizeObserver" in html
+    assert "redrawForSize" in html
+    assert "window.dispatchEvent(new Event(&#x27;resize&#x27;))" in html
+    assert "#8e6a95" not in html
 
 
 def test_full_timeline_groups_keep_every_frame_within_shader_limit():

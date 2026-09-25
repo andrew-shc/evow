@@ -15,13 +15,15 @@ from .run import execute_run, list_saved_runs, load_saved_run
 from GREENFIELD.app_core.splat_viewer import empty_splat_html, splat_html
 from .workflow import workflow_card_html, workflow_header
 
-from GREENFIELD.app_core.ui import source_and_saved_controls
+from GREENFIELD.app_core.ui import help_icon, run_total_update, source_and_saved_controls
 
 SAMPLE_VIDEO = settings.assets / "replay" / "samples" / "trees_swaying_pexels_12644693.mp4"
 REPLAY_CSS = """
 .evow-section-heading h2 { font-size: 1.5rem !important; font-weight: 700 !important; line-height: 1.35 !important; }
 .evow-media { border: 2px solid #71869a !important; border-radius: 10px !important; padding: 6px !important; background: #f8fafc !important; }
 #novel-view-output, #splat-viewer-output { position: relative; overflow: hidden; }
+/* .evow-help icon styling now lives in dashboard.py's FLOW_HEADER_CSS: this
+   nested Blocks css is dropped when the dashboard merges pages with render(). */
 .evow-generation-spinner::after { content: ""; position: absolute; inset: 0; z-index: 10; background: rgb(248 250 252 / 72%); pointer-events: all; }
 .evow-generation-spinner::before { content: ""; position: absolute; top: 50%; left: 50%; z-index: 11; width: 28px; height: 28px; margin: -14px; border: 3px solid #628197; border-top-color: #102a43; border-radius: 50%; animation: evow-generation-spin .8s linear infinite; }
 @keyframes evow-generation-spin { to { transform: rotate(360deg); } }
@@ -74,7 +76,7 @@ def _display(state: dict):
                   visible=bool(models) and not is_splat),
         splat_update,
         gr.update(visible=bool(models) and not is_splat, maximum=max(0, len(models) - 1), value=0),
-        models, *workflow_header_updates, *workflow_card_updates, state["run_id"],
+        models, *workflow_header_updates, *workflow_card_updates, run_total_update(state["trace"]), state["run_id"],
         (gr.update(choices=list_saved_runs(), value=state["run_id"])
          if state["video"] else gr.update()),
         state["trace"]["mode"],
@@ -164,12 +166,13 @@ def build_app() -> gr.Blocks:
         )
         with gr.Row():
             with gr.Column(scale=1):
+                gr.Markdown("## 1. Source")
                 source, sample_button, saved, load_button = source_and_saved_controls(
                     "Source", list_saved_runs(), "ASSETS/replay/runs/", SAMPLE_VIDEO.is_file(),
                     "evow-replay-saved-runs",
                 )
 
-                gr.Markdown("## 2. Methodology")
+                gr.Markdown("## 2. Methodology " + help_icon("Choose an overall 3D representation family. Model-specific pipeline detail appears in Internal Execution Flow.", "Methodology"))
                 mode = gr.Radio(
                     [("Explicit 3D: 4D Gaussian", "explicit"),
                      ("Implicit 3D: Video Diffusion", "implicit"),
@@ -196,7 +199,7 @@ def build_app() -> gr.Blocks:
                 with gr.Row():
                     sampled = gr.Video(label="Input", interactive=False, elem_classes="evow-media")
                     output = gr.Video(
-                        label="Novel View from (§3)", interactive=False, elem_classes="evow-media",
+                        label="Novel View from (§3)", interactive=False, elem_classes=["evow-media", "evow-output-slot"],
                         elem_id="novel-view-output", visible=True, show_download_button=True,
                     )
                 model = gr.Model3D(label="Legacy depth mesh", height=440, visible=False)
@@ -204,20 +207,22 @@ def build_app() -> gr.Blocks:
                     value=empty_splat_html(), elem_id="splat-viewer-output", visible=True,
                 )
                 mesh_index = gr.Slider(0, 0, value=0, step=1, label="Legacy mesh time step", visible=False)
-                gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
-                workflow_headers = []
-                workflow_cards = []
-                with gr.Accordion("", open=False, elem_classes="internal-flow"):
-                    for index, value in enumerate(_empty_workflow_cards("explicit")):
-                        label, state_class = workflow_header({"mode": "explicit", "events": []}, index)
-                        with gr.Accordion(label, open=False, elem_classes=["evow-stage", state_class]) as workflow_header_component:
-                            workflow_headers.append(workflow_header_component)
-                            workflow_cards.append(gr.HTML(value=value))
 
+        gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
+        workflow_headers = []
+        workflow_cards = []
+        run_total = None
+        with gr.Accordion("", open=False, elem_classes="internal-flow"):
+            for index, value in enumerate(_empty_workflow_cards("explicit")):
+                label, state_class = workflow_header({"mode": "explicit", "events": []}, index)
+                with gr.Accordion(label, open=False, elem_classes=["evow-stage", state_class]) as workflow_header_component:
+                    workflow_headers.append(workflow_header_component)
+                    workflow_cards.append(gr.HTML(value=value))
+            run_total = gr.Markdown("**Run total:** —", elem_classes="evow-run-total")
         model_paths = gr.State([])
         run_id = gr.State("")
         outputs = [
-            sampled, output, model, splat_viewer, mesh_index, model_paths, *workflow_headers, *workflow_cards, run_id, saved, mode,
+            sampled, output, model, splat_viewer, mesh_index, model_paths, *workflow_headers, *workflow_cards, run_total, run_id, saved, mode,
         ]
         sample_button.click(_included_sample, None, source)
         mode.change(

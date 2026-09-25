@@ -50,8 +50,8 @@ def test_trace_persists_stage_local_time_and_ui_hides_run_total(monkeypatch, tmp
     spec = StageSpec("Generate", "purpose", "", "", "", "", "", "")
     assert stage_label(0, spec, next_stage)[0].endswith("0.00s")
     html = stage_html(spec, next_stage, stage_started_at=1.25)
-    assert '&quot;stage_elapsed_seconds&quot;: 0.0' in html
-    assert "run_elapsed_seconds" not in html
+    assert "Stage time</dt><dd>0.00s" in html
+    assert "stage_elapsed_seconds" not in html
 
 
 def test_ui_derives_stage_time_for_legacy_events() -> None:

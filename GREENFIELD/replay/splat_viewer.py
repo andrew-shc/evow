@@ -59,13 +59,13 @@ html,body{{margin:0;width:100%;height:100%;overflow:hidden;background:#101b27;co
 #loading span{{width:22px;height:22px;border:3px solid #628197;border-top-color:#eef4fa;border-radius:50%;animation:spin .8s linear infinite}}
 #loading.error{{padding:24px;text-align:center;pointer-events:auto;color:#f3c4c4;background:#101b27e8}}
 @keyframes spin{{to{{transform:rotate(360deg)}}}}
-#controls{{position:absolute;display:flex;align-items:center;gap:8px;left:12px;right:12px;bottom:12px;z-index:4;background:#101b27dd;padding:8px;border-radius:7px}}
-button{{color:#eef4fa;background:#28455a;border:1px solid #628197;border-radius:5px;padding:4px 9px;cursor:pointer}}
+#controls{{position:absolute;display:flex;align-items:center;gap:8px;left:12px;right:12px;bottom:12px;z-index:4;padding:8px;border:1px solid #628197;border-radius:7px;background:#102a43e8;box-shadow:0 2px 8px #0004}}
+button{{color:#eef4fa;background:#28455a;border:1px solid #628197;border-radius:5px;padding:4px 9px;font:inherit;cursor:pointer}}
 button:disabled{{cursor:wait;opacity:.65}}
 #timeline{{--timeline-start:#55758c;--boundary:100%;flex:1;min-width:0;appearance:none;background:transparent;cursor:pointer}}
 #timeline:disabled{{cursor:wait}}
-#timeline::-webkit-slider-runnable-track{{height:5px;border-radius:999px;background:linear-gradient(to right,var(--timeline-start) 0,var(--timeline-start) var(--boundary),#8e6a95 var(--boundary),#8e6a95 100%)}}
-#timeline::-moz-range-track{{height:5px;border-radius:999px;background:linear-gradient(to right,var(--timeline-start) 0,var(--timeline-start) var(--boundary),#8e6a95 var(--boundary),#8e6a95 100%)}}
+#timeline::-webkit-slider-runnable-track{{height:5px;border-radius:999px;background:linear-gradient(to right,var(--timeline-start) 0,var(--timeline-start) var(--boundary),#7890a4 var(--boundary),#7890a4 100%)}}
+#timeline::-moz-range-track{{height:5px;border-radius:999px;background:linear-gradient(to right,var(--timeline-start) 0,var(--timeline-start) var(--boundary),#7890a4 var(--boundary),#7890a4 100%)}}
 #timeline:not(.segmented)::-webkit-slider-runnable-track{{background:#55758c}}
 #timeline:not(.segmented)::-moz-range-track{{background:#55758c}}
 #timeline::-webkit-slider-thumb{{appearance:none;width:14px;height:14px;margin-top:-4.5px;border:1px solid #d7e4ee;border-radius:50%;background:#eef4fa}}
@@ -170,7 +170,15 @@ async function preloadGroup(paths) {{
     viewer.controls.enableRotate = true; viewer.controls.enablePan = true; viewer.controls.enableZoom = true;
     viewer.controls.screenSpacePanning = true; viewer.controls.update();
   }}
-  return {{ viewer, element, visibleFrame: 0 }};
+  // Gradio can insert the iframe before its parent has reached its final width.
+  // Keep redraws local to this iframe, rather than asking the whole dashboard
+  // to synthesize resize events after every DOM update.
+  const redrawForSize = () => requestAnimationFrame(() => {{
+    window.dispatchEvent(new Event('resize'));
+    viewer.forceRenderNextFrame();
+  }});
+  const resizeObserver = new ResizeObserver(redrawForSize);
+  resizeObserver.observe(element); redrawForSize();
 }}
 
 timeline.addEventListener('input', () => {{ stop(); setTime(timeline.value); }});

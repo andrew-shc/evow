@@ -30,6 +30,7 @@ Keep recordings, model outputs, traces, and public replay assets under root ASSE
 
 - The fixed camera provides no direct observation of geometry behind visible surfaces. The interface must not present inferred geometry as captured fact.
 - Processing all eight modes on one workstation requires a queue that lets capture continue during expensive runs.
+- **Dashboard styling:** the dashboard is a top-level `gr.Blocks` that hosts a persistent top bar above manually built `gr.Tabs()`, merging each feature page with `Blocks.render()`. `render()` drops every child page's `css=`/`js=`, so only the root `FLOW_HEADER_CSS` in `dashboard.py` is mounted. Shared dashboard CSS — including `.evow-help` and `.evow-topbar` styling — must live there; rules in `replay/app.py`'s `REPLAY_CSS` or `app_core/ui.py`'s `APP_CSS` never reach the served page. After editing any UI code, restart the Gradio process: LAN clients otherwise keep seeing the stale build.
 
 ## Results
 

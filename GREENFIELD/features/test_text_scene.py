@@ -264,8 +264,8 @@ def test_environmental_edit_overrides_a_partial_grounded_target(monkeypatch, tmp
     assert captured["mask"].all()
 
 
-def test_edit_preparation_saves_preview_and_blocks_vace_until_confirmation(monkeypatch, tmp_path: Path) -> None:
-    """The scope-review step must not invoke VACE before the owner confirms it."""
+def test_edit_run_generates_in_a_single_pass(monkeypatch, tmp_path: Path) -> None:
+    """Text Manipulation resolves the scope and generates without a separate approval gate."""
     frames = _frames()
     masks = np.zeros((len(frames), 16, 20), dtype=bool)
     masks[:, :8, :] = True
@@ -281,19 +281,17 @@ def test_edit_preparation_saves_preview_and_blocks_vace_until_confirmation(monke
         return source
 
     monkeypatch.setattr(editing, "edit_video", fake_edit)
-    artifacts = RunArtifacts(tmp_path / "prepared")
-    prepared = [item for item in editing.prepare("unused.mp4", editing.EditingRequest("implicit", "make the sky red", 0), artifacts) if isinstance(item, editing.PreparedEdit)][0]
-    assert calls["vace"] == 0
-    assert prepared.preview.is_file()
-    assert (artifacts.run_dir / "edit_mask.npy").is_file()
-
-    result = list(editing.generate_prepared("unused.mp4", editing.EditingRequest("implicit", "make the sky red", 0), artifacts, prepared.scope, prepared.coverage, prepared.broad_warning))[-1]
+    artifacts = RunArtifacts(tmp_path / "single-pass")
+    result = list(editing.run("unused.mp4", editing.EditingRequest("implicit", "make the sky red", 0), artifacts))[-1]
     assert calls["vace"] == 1
-    assert result.metadata["scope_preview"] == "scope_preview.mp4"
+    assert (artifacts.run_dir / "edit_mask.npy").is_file()
+    assert not (artifacts.run_dir / "scope_preview.mp4").exists()
+    assert "scope_preview" not in result.metadata
+    assert result.metadata["generated"] is True
 
 
-def test_edit_preparation_flags_an_implausibly_broad_named_target(monkeypatch, tmp_path: Path) -> None:
-    """A sky-like target mask covering nearly everything must require visible review."""
+def test_edit_run_flags_an_implausibly_broad_named_target(monkeypatch, tmp_path: Path) -> None:
+    """A sky-like target mask covering nearly everything is recorded as a broad named target."""
     frames = _frames()
     masks = np.ones((len(frames), 16, 20), dtype=bool)
     monkeypatch.setattr(editing, "load_text_settings", lambda: SimpleNamespace(episode_fps=12, episode_max_frames=81))
@@ -301,8 +299,9 @@ def test_edit_preparation_flags_an_implausibly_broad_named_target(monkeypatch, t
     monkeypatch.setattr(editing, "ground_and_track", lambda *_args: MaskTrack(masks, GroundedBox((0, 0, 20, 16), 0.9), 2))
     monkeypatch.setattr(editing, "source_digest", lambda _path: "source-hash")
     monkeypatch.setattr(editing, "write_video", lambda _frames, path, _fps: (path.write_bytes(b"video"), path)[1])
+    monkeypatch.setattr(editing, "edit_video", lambda source, _mask, _prompt, _seed: source)
 
-    prepared = [item for item in editing.prepare("unused.mp4", editing.EditingRequest("implicit", "make the sky red", 0), RunArtifacts(tmp_path / "broad")) if isinstance(item, editing.PreparedEdit)][0]
-    assert prepared.scope == "grounded_target"
-    assert prepared.coverage == 1.0
-    assert prepared.broad_warning is True
+    result = list(editing.run("unused.mp4", editing.EditingRequest("implicit", "make the sky red", 0), RunArtifacts(tmp_path / "broad")))[-1]
+    assert result.metadata["scope"] == "grounded_target"
+    assert result.metadata["mask_coverage"] == 1.0
+    assert result.metadata["broad_target_warning"] is True

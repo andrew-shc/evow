@@ -33,7 +33,7 @@ operations while playback runs: this renderer rebuilds its scene buffer for thos
 
 ## CUDA recovery
 
-Implicit Future View uses Diffusers CPU offload and 14-frame chunks. The owner-facing **Clear GPU memory** control releases only this dashboard process’s cached models after an OOM; it cannot free GPU memory held by another process.
+Implicit Future View uses Diffusers CPU offload and 14-frame chunks. The owner-facing **Clear GPU memory** control lives in the dashboard-wide top bar (shown on every tab, not inside any one project page) and releases only this dashboard process’s cached models after an OOM; it cannot free GPU memory held by another process.
 
 ## Text modes
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import gradio as gr
 from GREENFIELD.features import pages
 
 
@@ -76,3 +77,24 @@ def test_explicit_edit_viewer_uses_only_run_owned_splats(monkeypatch, tmp_path: 
     assert captured["paths"] == [str(tmp_path / path) for path in paths]
     assert captured["durations"] == [1 / 12] * 3
     assert captured["observed_frames"] is None
+
+
+def test_text_page_inputs_are_unwrapped_and_seeded_in_configuration() -> None:
+    """Keep compact text fields and the reproducibility controls in configuration."""
+    selection_page = pages.build_selection()
+    editing_page = pages.build_editing()
+    future_page = pages.build_future()
+
+    query = next(component for component in selection_page.blocks.values()
+                 if isinstance(component, gr.Textbox) and component.label == "Query")
+    instruction = next(component for component in editing_page.blocks.values()
+                       if isinstance(component, gr.Textbox) and component.label == "Instruction")
+    assert query.container is False
+    assert instruction.container is False
+
+    for page in (future_page, editing_page):
+        seed = next(component for component in page.blocks.values()
+                    if isinstance(component, gr.Number) and component.label == "Seed")
+        assert seed.value == 0
+        assert isinstance(seed.parent, gr.Accordion)
+        assert seed.parent.label == "Configuration"

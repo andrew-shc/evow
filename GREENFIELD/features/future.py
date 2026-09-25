@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from typing import Iterator
 from GREENFIELD.app_core.contracts import FeatureResult, RunArtifacts, StageEvent, StageSpec
+from GREENFIELD.app_core.model_catalog import GSPLAT, SVD, VIDEO_DEPTH_ANYTHING
 from GREENFIELD.app_core.media import write_video
 from .future_settings import load_future_settings
 from .model_adapters import generate_continuation_steps
@@ -10,10 +11,10 @@ from .future_explicit import run_explicit
 STAGES = (
     StageSpec("Sample input tail", "Sample the final window from the supplied stationary-camera video.",
               "GREENFIELD/app_core/media.py", "read_recent_window", "source video", "observed RGB frames", "Source"),
-    StageSpec("Prepare selected method", "Load the chosen video model or construct its 3D reconstruction inputs.",
-              "GREENFIELD/features/future.py", "run", "history · methodology · seed", "ready local model or geometry prior", "Methodology"),
+    StageSpec("Prepare selected method", "Load Stable Video Diffusion for implicit rollout or Video Depth Anything reconstruction inputs for explicit 3D.",
+              "GREENFIELD/features/future.py", "run", "history · methodology · seed", "ready local model or geometry prior", "Methodology", model_refs=(SVD, VIDEO_DEPTH_ANYTHING)),
     StageSpec("Generate future scenario", "Roll out one possible future; it is never observed footage.",
-              "GREENFIELD/features/future.py", "run", "prepared method state", "generated RGB frames or future 3D splats", "Generate"),
+              "GREENFIELD/features/future.py", "run", "prepared method state", "generated RGB frames or future 3D splats", "Generate", model_refs=(SVD, GSPLAT)),
     StageSpec("Save forecast", "Write the video, trace, and explicit scene artifacts when available.",
               "GREENFIELD/app_core/media.py", "write_video", "generated scenario", "forecast.mp4 · trace.json", "Generate"),
 )
@@ -25,10 +26,10 @@ class FutureRequest:
     def validate(self):
         if self.mode not in {"implicit", "explicit"}: raise ValueError("Choose Implicit video or Explicit 3D.")
 
-def run(frames, fps: float, request: FutureRequest, artifacts: RunArtifacts) -> Iterator[StageEvent | FeatureResult]:
+def run(frames, fps: float, request: FutureRequest, artifacts: RunArtifacts, settings=None) -> Iterator[StageEvent | FeatureResult]:
     """Emit truthful stage updates for either local Future View method."""
     request.validate()
-    settings = load_future_settings()
+    settings = settings or load_future_settings()
     if request.mode == "implicit":
         steps = generate_continuation_steps(frames[-1], settings.output_frames, request.seed)
         yield StageEvent("Prepare selected method", "running",

@@ -1,5 +1,6 @@
 """Replay-shell controllers with consistent sample and saved-run source controls."""
 
+from dataclasses import replace
 from html import escape
 from pathlib import Path
 import shutil
@@ -10,8 +11,9 @@ import gradio as gr
 from GREENFIELD.app_core.contracts import FeatureResult, StageEvent, StageSpec
 from GREENFIELD.app_core.media import read_video, read_recent_window
 from GREENFIELD.app_core.trace import FeatureTrace, list_runs
-from GREENFIELD.app_core.ui import APP_CSS, source_and_saved_controls, stage_html, stage_label
+from GREENFIELD.app_core.ui import APP_CSS, help_icon, run_total_update, source_and_saved_controls, stage_html, stage_label
 from GREENFIELD.app_core.splat_viewer import empty_splat_html, splat_html
+from GREENFIELD.app_core.model_catalog import models_for
 from . import editing, future, selection
 
 ASSETS = Path(__file__).resolve().parents[2] / "ASSETS"
@@ -214,7 +216,14 @@ def _editing_method_change(mode: str) -> dict:
     """Hide retained explicit scene output when the selected family is implicit."""
     return gr.update(visible=mode in EDITING_EXPLICIT_MODES)
 
-def _flow(specs: tuple[StageSpec, ...]) -> tuple[list[gr.Accordion], list[gr.HTML]]:
+def _method_specs(feature: str, specs: tuple[StageSpec, ...], mode: str) -> tuple[StageSpec, ...]:
+    """Keep a shared stage layout, but reveal only the active method's models."""
+    selected_ids = {model.identifier for model in models_for(feature, mode)}
+    return tuple(replace(spec, model_refs=tuple(model for model in spec.model_refs if model.identifier in selected_ids)) for spec in specs)
+
+
+def _flow(feature: str, specs: tuple[StageSpec, ...]) -> tuple[list[gr.Accordion], list[gr.HTML], gr.Markdown]:
+    specs = _method_specs(feature, specs, "explicit")
     headers, cards = [], []
     with gr.Accordion("Show internals", open=False, elem_classes="internal-flow"):
         for number, spec in enumerate(specs):
@@ -222,10 +231,12 @@ def _flow(specs: tuple[StageSpec, ...]) -> tuple[list[gr.Accordion], list[gr.HTM
             with gr.Accordion(label, open=False, elem_classes=["evow-stage", css_class]) as header:
                 headers.append(header)
                 cards.append(gr.HTML(stage_html(spec)))
-    return headers, cards
+        total = gr.Markdown("**Run total:** —", elem_classes="evow-run-total")
+    return headers, cards, total
 
 
-def _updates(specs: tuple[StageSpec, ...], trace: dict) -> tuple[dict, ...]:
+def _updates(feature: str, specs: tuple[StageSpec, ...], trace: dict) -> tuple[dict, ...]:
+    specs = _method_specs(feature, specs, str(trace.get("mode", "explicit")))
     latest = {event["stage"]: event for event in trace["events"]}
     header_changes, card_changes = [], []
     for number, spec in enumerate(specs):
@@ -234,11 +245,16 @@ def _updates(specs: tuple[StageSpec, ...], trace: dict) -> tuple[dict, ...]:
         stage_started_at = float(stage_events[0]["elapsed_seconds"]) if stage_events else None
         label, css_class = stage_label(number, spec, event, stage_started_at)
         header_changes.append(gr.update(label=label, elem_classes=["evow-stage", css_class]))
-        card_changes.append(gr.update(value=stage_html(spec, event, stage_started_at)))
+        card_changes.append(gr.update(value=stage_html(spec, event, stage_started_at, stage_events)))
     # Gradio registers all accordion headers before all HTML cards. Keeping the
     # update order identical prevents a card update being applied to the next
     # stage header, which otherwise appears as duplicate or missing stages.
-    return tuple(header_changes + card_changes)
+    return tuple(header_changes + card_changes + [run_total_update(trace)])
+
+def _method_flow_change(feature: str, specs: tuple[StageSpec, ...], mode: str) -> tuple[dict, ...]:
+    """Refresh dormant flow cards immediately when a methodology is selected."""
+    return _updates(feature, specs, {"mode": mode, "events": []})
+
 
 
 def _sample() -> str:
@@ -271,7 +287,7 @@ def _page(feature: str, title: str, source_label: str, controls: Callable[[], tu
         gr.Markdown(f"# {title}")
         with gr.Row():
             with gr.Column(scale=1):
-                gr.Markdown("## 1. Source")
+                gr.Markdown("## 1. Source " + help_icon("Searches a stationary-view upload for up to five non-overlapping four-second clips. Explicit 3D is an estimate from one fixed camera.", "Source limits"))
                 source, sample, saved, load = source_and_saved_controls(
                     source_label, list_runs(ASSETS, feature), f"ASSETS/{feature}/runs/",
                     SAMPLE_VIDEO.is_file(), f"evow-{feature}-saved-runs",
@@ -282,14 +298,14 @@ def _page(feature: str, title: str, source_label: str, controls: Callable[[], tu
             with gr.Column(scale=2):
                 gr.Markdown("## 5. Output", elem_classes="evow-section-heading")
                 output = result_factory()
-                gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
-                headers, cards = _flow(specs)
-        button.click(handler, [source, *inputs], [output, *headers, *cards], concurrency_limit=1, show_progress="hidden")
+        gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
+        headers, cards, run_total = _flow(feature, specs)
+        button.click(handler, [source, *inputs], [output, *headers, *cards, run_total], concurrency_limit=1, show_progress="hidden")
         sample.click(_sample, None, source)
         def load_saved(run_id):
             loaded_source, primary, rows, trace = _load_saved(feature, run_id)
-            return loaded_source, rows if is_table else primary, *_updates(specs, trace)
-        load.click(load_saved, saved, [source, output, *headers, *cards])
+            return loaded_source, rows if is_table else primary, *_updates(feature, specs, trace)
+        load.click(load_saved, saved, [source, output, *headers, *cards, run_total])
     return page
 
 
@@ -333,21 +349,9 @@ def _future_timing_update(trace: dict) -> dict:
     return gr.update(value=f"**Run total:** {elapsed:.2f}s")
 
 
-def _clear_gpu_memory() -> str:
-    """Offer an owner-controlled recovery action after CUDA allocation failures."""
-    from .model_adapters import clear_gpu_memory
-    result = clear_gpu_memory()
-    before = result["before_bytes"] / 1024**3
-    after = result["after_bytes"] / 1024**3
-    released = ", ".join(result["released"]) or "cached CUDA allocations"
-    return f"**GPU memory cleared:** {released}. App allocation: {before:.2f} → {after:.2f} GiB."
-
-
-def _execute_future_stream(source: str, mode: str, request: object):
+def _execute_future_stream(source: str, mode: str, request: object, settings):
     """Yield each persisted Future View stage so Gradio renders real progress."""
     if not source: raise gr.Error("Choose a stationary-view video first.")
-    from .future_settings import load_future_settings
-    settings = load_future_settings()
     # Create the trace before reading so the source stage has a genuine start
     # boundary rather than appearing as an instantaneous completed event.
     trace = FeatureTrace(ASSETS, "future", mode, {**request.__dict__, "source_name": Path(source).name})
@@ -367,7 +371,7 @@ def _execute_future_stream(source: str, mode: str, request: object):
                                       "input_fps": fps, "input_segment": "tail end of source video"}))
         yield None, trace.record
         result = None
-        for item in future.run(frames, fps, request, trace.artifacts):
+        for item in future.run(frames, fps, request, trace.artifacts, settings):
             if isinstance(item, StageEvent):
                 active_stage = item.stage
                 trace.add(item); yield None, trace.record
@@ -380,63 +384,86 @@ def _execute_future_stream(source: str, mode: str, request: object):
         trace.add(StageEvent(active_stage, "error", str(error)))
         trace.add(StageEvent("Run failed", "error", str(error)))
         raise gr.Error(str(error)) from error
+def _future_effective_settings(base, history_seconds, history_fps, output_seconds, output_fps, chunk_frames, motion_fit_frames, observed_fps, forecast_fps, max_side):
+    """Validate editable defaults and return an immutable per-run settings snapshot."""
+    values = (history_seconds, history_fps, output_seconds, output_fps, chunk_frames, motion_fit_frames, observed_fps, forecast_fps, max_side)
+    if any(float(value) <= 0 for value in values):
+        raise gr.Error("Every Future View configuration value must be greater than zero.")
+    return replace(base, history_seconds=float(history_seconds), history_fps=int(history_fps), output_seconds=int(output_seconds), output_fps=int(output_fps), chunk_frames=int(chunk_frames), motion_fit_frames=int(motion_fit_frames), observed_splat_timeline_fps=int(observed_fps), forecast_splat_timeline_fps=int(forecast_fps), max_side=int(max_side))
+
+def future_configuration_rows(settings) -> list[list[str]]:
+    """Return the effective, read-only Future View defaults for the UI."""
+    return [
+        ["Implicit model", settings.model_id],
+        ["Observed history", f"{settings.history_seconds:g}s at {settings.history_fps} fps"],
+        ["Generated future", f"{settings.output_seconds}s at {settings.output_fps} fps ({settings.output_frames} frames)"],
+        ["SVD rollout chunk", f"{settings.chunk_frames} frames"],
+        ["Explicit motion fit", f"{settings.motion_fit_frames} observed frames"],
+        ["3D timeline", f"observed {settings.observed_splat_timeline_fps} fps · forecast {settings.forecast_splat_timeline_fps} fps"],
+        ["Input cap", f"{settings.max_side}px longest side"],
+    ]
+
+def _future_configuration_markdown(settings) -> str:
+    rows = future_configuration_rows(settings)
+    return "| Default | Effective value |\n| --- | --- |\n" + "\n".join(f"| {name} | `{value}` |" for name, value in rows)
+
 
 def build_future() -> gr.Blocks:
-    """Build the only feature page whose explicit result includes an orbitable scene."""
+    """Build Future View with editable per-run configuration defaults."""
     from .future_settings import load_future_settings
     settings = load_future_settings()
     with gr.Blocks(css=APP_CSS, analytics_enabled=False) as page:
         gr.Markdown("# Future View")
         with gr.Row():
             with gr.Column(scale=1):
-                gr.Markdown("## 1. Source")
-                source, sample, saved, load = source_and_saved_controls(
-                    "Observed camera history", list_runs(ASSETS, "future"), "ASSETS/future/runs/",
-                    SAMPLE_VIDEO.is_file(), "evow-future-saved-runs",
-                )
-                gr.Markdown(f"Input tail: up to the final {settings.history_seconds:g} seconds of the uploaded video, resampled at {settings.history_fps} fps (up to {settings.history_seconds * settings.history_fps:g} frames). Shorter clips use all available history.")
-                gr.Markdown("## 2. Methodology")
-                mode = gr.Radio([("Explicit 3D: Per-run Scene Projection", "explicit"),
-                                 ("Implicit 3D: Video Generation", "implicit")],
-                                value="explicit", show_label=False, elem_classes="evow-method-choice")
+                gr.Markdown("## 1. Source " + help_icon("Uses only the final stationary-camera history window. Shorter videos use all available history.", "Observed-history limits"))
+                source, sample, saved, load = source_and_saved_controls("Observed camera history", list_runs(ASSETS, "future"), "ASSETS/future/runs/", SAMPLE_VIDEO.is_file(), "evow-future-saved-runs")
+                gr.Markdown("## 2. Methodology " + help_icon("Choose Explicit 3D for Video Depth Anything + gsplat reconstruction, or Implicit video for Stable Video Diffusion rollout. Exact active models appear in the internal-flow stages.", "Methodology"))
+                mode = gr.Radio([("Explicit 3D", "explicit"), ("Implicit 3D", "implicit")], value="explicit", show_label=False, elem_classes="evow-method-choice")
                 gr.Markdown("## 3. Forecast")
-                seed = gr.Number(value=0, precision=0, label="Seed")
-                clear_gpu = gr.Button("Clear GPU memory", variant="secondary")
-                gpu_status = gr.Markdown("Clear cached feature models after a CUDA OOM, then retry.")
-                gr.Markdown(f"Output: one generated {settings.output_seconds}-second future at {settings.output_fps} fps ({settings.output_frames} frames). Explicit 3D keeps observed history at {settings.observed_splat_timeline_fps} fps and exports the generated future at {settings.forecast_splat_timeline_fps} fps for smooth 3D playback; neither output is observed footage or a reliable prediction.")
+                with gr.Accordion("Configuration", open=False):
+                    # Tiny inline info icon replaces the former standalone helper sentence, so the
+                    # guidance now lives behind the same click popover as the rest of the dashboard
+                    # (and still collapses with the accordion, being its first child).
+                    with gr.Row():
+                        history_seconds = gr.Number(settings.history_seconds, minimum=0.1, label="History seconds", container=False)
+                        history_fps = gr.Number(settings.history_fps, minimum=1, precision=0, label="History fps", container=False)
+                    with gr.Row():
+                        output_seconds = gr.Number(settings.output_seconds, minimum=1, precision=0, label="Output seconds", container=False)
+                        output_fps = gr.Number(settings.output_fps, minimum=1, precision=0, label="Output fps", container=False)
+                    with gr.Row():
+                        chunk_frames = gr.Number(settings.chunk_frames, minimum=1, precision=0, label="SVD chunk frames", container=False)
+                        motion_fit_frames = gr.Number(settings.motion_fit_frames, minimum=1, precision=0, label="Motion fit frames", container=False)
+                    with gr.Row():
+                        observed_fps = gr.Number(settings.observed_splat_timeline_fps, minimum=1, precision=0, label="Observed 3D timeline fps", container=False)
+                        forecast_fps = gr.Number(settings.forecast_splat_timeline_fps, minimum=1, precision=0, label="Forecast 3D timeline fps", container=False)
+                    max_side = gr.Number(settings.max_side, minimum=64, precision=0, label="Maximum input side", container=False)
+                    seed = gr.Number(value=0, precision=0, label="Seed", container=False)
                 gr.Markdown("## 4. Generate")
                 button = gr.Button("Generate", variant="primary")
             with gr.Column(scale=2):
                 gr.Markdown("## 5. Output", elem_classes="evow-section-heading")
-                output = gr.Video(label="Generated future estimate", interactive=False, elem_classes="evow-media", show_download_button=True)
-                run_timing = gr.Markdown("**Run total:** —", elem_classes="evow-run-timing")
+                output = gr.Video(label="Generated future estimate", interactive=False, elem_classes=["evow-media", "evow-output-slot"], show_download_button=True)
                 splat_viewer = gr.HTML(value=empty_splat_html(), elem_id="future-splat-viewer-output")
-                gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
-                headers, cards = _flow(future.STAGES)
-
-        def handle(video, selected_mode, selected_seed):
+        gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
+        headers, cards, run_total = _flow("future", future.STAGES)
+        def handle(video, selected_mode, selected_seed, *values):
+            effective = _future_effective_settings(settings, *values)
             request = future.FutureRequest(selected_mode, int(selected_seed))
-            for result, trace in _execute_future_stream(video, selected_mode, request):
-                if result is None:
-                    yield None, gr.update(), _future_timing_update(trace), *_updates(future.STAGES, trace)
-                elif selected_mode in FUTURE_EXPLICIT_MODES:
-                    yield str(result.primary), _future_viewer_update(result.metadata, result.primary.parent.parent), _future_timing_update(trace), *_updates(future.STAGES, trace)
-                else:
-                    yield str(result.primary), gr.update(visible=False), _future_timing_update(trace), *_updates(future.STAGES, trace)
-
+            for result, trace in _execute_future_stream(video, selected_mode, request, effective):
+                viewer = _future_viewer_update(result.metadata, result.primary.parent.parent) if result and selected_mode in FUTURE_EXPLICIT_MODES else gr.update(visible=False) if result else gr.update()
+                yield str(result.primary) if result else None, viewer, *_updates("future", future.STAGES, trace)
         def load_saved(run_id):
             loaded_source, primary, _rows, trace = _load_saved("future", run_id)
             result = trace.get("result") or {}
-            if trace.get("mode") in FUTURE_EXPLICIT_MODES:
-                viewer = _future_viewer_update(result.get("metadata", {}), ASSETS / "future" / "runs" / run_id)
-                return loaded_source, primary, viewer, _future_timing_update(trace), *_updates(future.STAGES, trace)
-            return loaded_source, primary, gr.update(visible=False), _future_timing_update(trace), *_updates(future.STAGES, trace)
-
-        button.click(handle, [source, mode, seed], [output, splat_viewer, run_timing, *headers, *cards], concurrency_limit=1, show_progress="hidden")
+            viewer = _future_viewer_update(result.get("metadata", {}), ASSETS / "future" / "runs" / run_id) if trace.get("mode") in FUTURE_EXPLICIT_MODES else gr.update(visible=False)
+            return loaded_source, primary, viewer, *_updates("future", future.STAGES, trace)
+        mode.change(lambda selected: _method_flow_change("future", future.STAGES, selected), mode, [*headers, *cards, run_total])
+        config_inputs = [history_seconds, history_fps, output_seconds, output_fps, chunk_frames, motion_fit_frames, observed_fps, forecast_fps, max_side]
+        button.click(handle, [source, mode, seed, *config_inputs], [output, splat_viewer, *headers, *cards, run_total], concurrency_limit=1, show_progress="hidden")
         mode.change(_future_method_change, mode, splat_viewer)
-        clear_gpu.click(_clear_gpu_memory, None, gpu_status, queue=False, show_progress="hidden")
         sample.click(_sample, None, source)
-        load.click(load_saved, saved, [source, output, splat_viewer, run_timing, *headers, *cards])
+        load.click(load_saved, saved, [source, output, splat_viewer, *headers, *cards, run_total])
     return page
 
 
@@ -446,57 +473,48 @@ def build_selection() -> gr.Blocks:
         gr.Markdown("# Text Query")
         with gr.Row():
             with gr.Column(scale=1):
-                gr.Markdown("## 1. Source")
+                gr.Markdown("## 1. Source " + help_icon("Searches a stationary-view upload for up to five non-overlapping four-second clips. Explicit 3D is an estimate from one fixed camera.", "Source limits"))
                 source, sample, saved, load = source_and_saved_controls(
                     "Source video (up to 5 minutes)", list_runs(ASSETS, "selection"), "ASSETS/selection/runs/",
                     SAMPLE_VIDEO.is_file(), "evow-selection-saved-runs",
                 )
-                gr.Markdown("Text Query searches one stationary-view upload for up to five non-overlapping 4-second source clips. The highlighted region is never spatially cropped.")
-                gr.Markdown("Explicit 3D region support is estimated from this one fixed camera view.")
-                gr.Markdown("## 2. Text")
-                query = gr.Textbox(label="Query", placeholder="dark clouds above moving tree branches")
-                gr.Markdown("## 3. Methodology")
+                gr.Markdown("## 2. Query")
+                query = gr.Textbox(label="Query", placeholder="dark clouds above moving tree branches", container=False)
+                gr.Markdown("## 3. Methodology " + help_icon("Choose Explicit 3D to lift tracked masks through Video Depth Anything + gsplat, or Implicit 3D for direct video masks. Exact active models appear in the internal-flow stages.", "Methodology"))
                 mode = gr.Radio(
-                    [("Explicit 3D: Dynamic Gaussian semantic regions", "explicit"),
-                     ("Implicit 3D: Video-language retrieval and tracked masks", "implicit")],
+                    [("Explicit 3D", "explicit"),
+                     ("Implicit 3D", "implicit")],
                     value="explicit", show_label=False, elem_classes="evow-method-choice",
                 )
                 gr.Markdown("## 4. Search")
                 button = gr.Button("Search", variant="primary")
             with gr.Column(scale=2):
-                gr.Markdown("## 5. Highlighted matching clips", elem_classes="evow-section-heading")
-                provenance = gr.Markdown("**Active Text Query run:** —")
+                gr.Markdown("## 5. Highlighted matching clips " + help_icon("Explicit mode shows selected 4D Gaussian structure in solid magenta; it is an orbitable structure viewer, not a projected video mask.", "3D structure viewer"), elem_classes="evow-section-heading")
                 semantic_gallery = gr.Gallery(label="2D semantic highlights (Grounding DINO + SAM2)", columns=2, rows=3, file_types=["video"], type="filepath", show_download_button=True, elem_classes="evow-media")
                 splat_viewer = gr.HTML(value=empty_splat_html(), elem_id="selection-splat-viewer", visible=False)
-                gr.Markdown("Explicit mode shows selected 4D Gaussian structure in solid magenta; it is an orbitable structure viewer, not a projected video mask.")
-                gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
-                headers, cards = _flow(selection.STAGES)
+        gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
+        headers, cards, run_total = _flow("selection", selection.STAGES)
 
         def handle(video, text, selected_mode):
             # Never leave a prior query visible during a fresh long-running search.
-            yield [], gr.update(value=empty_splat_html(), visible=False), "**Active Text Query run:** starting…", *_updates(selection.STAGES, {"events": []})
+            yield [], gr.update(value=empty_splat_html(), visible=False), *_updates("selection", selection.STAGES, {"mode": selected_mode, "events": []})
             request = selection.SelectionRequest(selected_mode, text)
             for result, trace in _execute_source_adapter_stream("selection", selected_mode, video, request, selection.run):
                 semantic = _live_selection_gallery(result) if result else gr.update()
                 viewer = _selection_viewer_update(result.metadata, result.clips[0].source.parent.parent) if result and selected_mode == "explicit" else gr.update(value=empty_splat_html(), visible=False)
-                yield semantic, viewer, _selection_provenance(trace), *_updates(selection.STAGES, trace)
+                yield semantic, viewer, *_updates("selection", selection.STAGES, trace)
 
         def load_saved(run_id):
             loaded_source, _primary, _rows, trace = _load_saved("selection", run_id); clips = ((trace.get("result") or {}).get("clips") or []); run_dir = ASSETS / "selection" / "runs" / run_id
             metadata = ((trace.get("result") or {}).get("metadata") or {})
             viewer = _selection_viewer_update(metadata, run_dir) if trace.get("mode") == "explicit" else gr.update(value=empty_splat_html(), visible=False)
-            return loaded_source, _selection_gallery_items(clips, run_dir), viewer, _selection_provenance(trace), *_updates(selection.STAGES, trace)
+            return loaded_source, _selection_gallery_items(clips, run_dir), viewer, *_updates("selection", selection.STAGES, trace)
+        mode.change(lambda selected: _method_flow_change("selection", selection.STAGES, selected), mode, [*headers, *cards, run_total])
 
-        button.click(handle, [source, query, mode], [semantic_gallery, splat_viewer, provenance, *headers, *cards], concurrency_limit=1, show_progress="hidden")
+        button.click(handle, [source, query, mode], [semantic_gallery, splat_viewer, *headers, *cards, run_total], concurrency_limit=1, show_progress="hidden")
         sample.click(_sample, None, source)
-        load.click(load_saved, saved, [source, semantic_gallery, splat_viewer, provenance, *headers, *cards])
+        load.click(load_saved, saved, [source, semantic_gallery, splat_viewer, *headers, *cards, run_total])
     return page
-
-
-def _editing_scope_details(prepared: editing.PreparedEdit) -> str:
-    """Describe the exact persisted VACE mask that awaits owner approval."""
-    warning = "\n\n⚠️ **Warning:** this named target covers more than 75% of the frame." if prepared.broad_warning else ""
-    return f"**Scope preview:** `{prepared.scope}` · editable pixels: **{prepared.coverage:.1%}**.{warning}"
 
 
 def _editing_result_caption(run_id: str, request: editing.EditingRequest, primary: Path) -> str:
@@ -506,67 +524,41 @@ def _editing_result_caption(run_id: str, request: editing.EditingRequest, primar
             f"prompt: “{escape(request.prompt.strip())}” · artifact `{escape(primary.name)}`")
 
 
-def _prepared_edit_from_trace(trace: FeatureTrace) -> editing.PreparedEdit:
-    """Recover approval details from run-owned trace data, never browser state."""
-    for event in reversed(trace.record.get("events", [])):
-        if event.get("stage") == "Review edit scope":
-            metrics = event.get("metrics") or {}
-            preview = _safe_result_file(trace.run_dir, event.get("preview"))
-            return editing.PreparedEdit(
-                preview=preview,
-                scope=str(metrics["scope"]),
-                coverage=float(metrics["mask_coverage"]),
-                broad_warning=bool(metrics.get("broad_target_warning", False)),
-            )
-    raise ValueError("That run has no saved edit-scope preview.")
-
-
 def build_editing() -> gr.Blocks:
-    """Build Text Manipulation as a reviewable scope preview followed by approval."""
+    """Build Text Manipulation as a single-pass text-conditioned edit."""
     with gr.Blocks(css=APP_CSS, analytics_enabled=False) as page:
         gr.Markdown("# Text Manipulation")
-        prepared_state = gr.State(value=None)
         with gr.Row():
             with gr.Column(scale=1):
-                gr.Markdown("## 1. Source")
+                gr.Markdown("## 1. Source " + help_icon("Upload one episode up to 6.75 seconds, or load a raw Text Query result. The yellow query overlay is never used as edit input; explicit geometry is estimated.", "Editing source limits"))
                 source, sample, saved, load = source_and_saved_controls(
                     "Short source episode", list_runs(ASSETS, "editing"), "ASSETS/editing/runs/",
                     SAMPLE_VIDEO.is_file(), "evow-editing-saved-runs",
                 )
-                gr.Markdown("Upload one episode up to 6.75 seconds, or load a raw Text Query result below. The visible yellow query overlay is never used as edit input.")
-                gr.Markdown("All edited output is generated. Any explicit 3D geometry is estimated from the single fixed camera view.")
-                query_clip = gr.Dropdown(choices=_selection_clip_choices(), label="Saved Text Query source clip")
-                with gr.Row():
-                    load_query_clip = gr.Button("Load query clip")
-                    refresh_query_clips = gr.Button("Refresh query clips", variant="secondary")
                 gr.Markdown("## 2. Instruction")
-                prompt = gr.Textbox(label="Instruction", placeholder="flood the forest while preserving the fixed camera view")
-                gr.Markdown("## 3. Methodology")
+                prompt = gr.Textbox(label="Instruction", placeholder="flood the forest while preserving the fixed camera view", container=False)
+                gr.Markdown("## 3. Methodology " + help_icon("Choose Explicit 3D to project scope through Video Depth Anything + gsplat, or Implicit 3D for direct VACE conditioning. Exact active models appear in the internal-flow stages.", "Methodology"))
                 mode = gr.Radio(
-                    [("Explicit 3D: Dynamic Gaussian scene edit", "explicit"),
-                     ("Implicit 3D: Text-conditioned video edit", "implicit")],
+                    [("Explicit 3D", "explicit"),
+                     ("Implicit 3D", "implicit")],
                     value="explicit", show_label=False, elem_classes="evow-method-choice",
                 )
-                seed = gr.Number(value=0, precision=0, label="Seed")
-                clear_gpu = gr.Button("Clear GPU memory", variant="secondary")
-                gpu_status = gr.Markdown("Clear cached feature models after a CUDA OOM, then retry.")
-                gr.Markdown("## 4. Review and apply")
-                preview_button = gr.Button("Preview edit scope", variant="secondary")
-                confirm_button = gr.Button("Generate approved edit", variant="primary", interactive=False)
+                with gr.Accordion("Configuration", open=False):
+                    seed = gr.Number(value=0, precision=0, label="Seed", container=False)
+                gr.Markdown("## 4. Generate")
+                button = gr.Button("Generate", variant="primary")
             with gr.Column(scale=2):
                 gr.Markdown("## 5. Output", elem_classes="evow-section-heading")
-                output = gr.Video(label="Generated edit / Explicit 3D render", interactive=False, elem_classes="evow-media", show_download_button=True)
+                output = gr.Video(label="Generated edit / Explicit 3D render", interactive=False, elem_classes=["evow-media", "evow-output-slot"], show_download_button=True)
                 result_caption = gr.Markdown("")
                 splat_viewer = gr.HTML(value=empty_splat_html(), elem_id="editing-splat-viewer-output", visible=False)
-                scope_preview = gr.Video(label="Editable-region preview (yellow)", interactive=False, visible=False, elem_classes="evow-media")
-                scope_details = gr.Markdown("")
-                gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
-                headers, cards = _flow(editing.STAGES)
+        gr.Markdown("## Internal Execution Flow", elem_classes="evow-section-heading evow-flow-heading")
+        headers, cards, run_total = _flow("editing", editing.STAGES)
 
-        def preview_scope(video, instruction, selected_mode, selected_seed):
-            request = editing.EditingRequest(selected_mode, instruction, int(selected_seed or 0))
+        def handle(video, instruction, selected_mode, selected_seed):
             if not video:
                 raise gr.Error("Choose a stationary-view video first.")
+            request = editing.EditingRequest(selected_mode, instruction, int(selected_seed or 0))
             trace = FeatureTrace(ASSETS, "editing", selected_mode, {**request.__dict__, "source_name": Path(video).name})
             active_stage = "Inspect source episode"
             try:
@@ -574,48 +566,21 @@ def build_editing() -> gr.Blocks:
                 shutil.copy2(video, source_copy)
                 trace.record["source_video"] = source_copy.name
                 trace._save()
-                # Clear both prior result surfaces before any potentially long scene work.
-                yield None, gr.update(value=empty_splat_html(), visible=False), gr.update(value=None, visible=False), gr.update(value="Preparing the editable-region preview…"), gr.update(value=""), gr.update(interactive=False), None, *_updates(editing.STAGES, trace.record)
-                prepared = None
-                for item in editing.prepare(str(source_copy), request, trace.artifacts):
-                    if isinstance(item, StageEvent):
-                        active_stage = item.stage
-                        trace.add(item)
-                        yield gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(interactive=False), None, *_updates(editing.STAGES, trace.record)
-                    else:
-                        prepared = item
-                if prepared is None:
-                    raise RuntimeError("Text Manipulation did not produce an edit-scope preview.")
-                yield None, gr.update(value=empty_splat_html(), visible=False), str(prepared.preview), gr.update(value=_editing_scope_details(prepared)), gr.update(value=f"**Run prepared:** `{trace.run_dir.name}`. Approve this exact mask to start generation."), gr.update(interactive=True), {"run_id": trace.run_dir.name}, *_updates(editing.STAGES, trace.record)
-            except Exception as error:
-                trace.add(StageEvent(active_stage, "error", str(error)))
-                trace.add(StageEvent("Run failed", "error", str(error)))
-                raise gr.Error(str(error)) from error
-
-        def generate_approved(state):
-            if not isinstance(state, dict) or not isinstance(state.get("run_id"), str):
-                raise gr.Error("Preview an edit scope before generating.")
-            trace = FeatureTrace.resume(ASSETS, "editing", state["run_id"])
-            request_data = trace.record.get("request") or {}
-            request = editing.EditingRequest(str(request_data.get("mode", "")), str(request_data.get("prompt", "")), int(request_data.get("seed", 0)))
-            prepared = _prepared_edit_from_trace(trace)
-            source_path = _safe_result_file(trace.run_dir, trace.record.get("source_video", "source.mp4"))
-            active_stage = "Generate edit proposal"
-            try:
-                yield gr.update(), gr.update(), gr.update(), gr.update(), gr.update(value=f"**Generating run:** `{trace.run_dir.name}`."), gr.update(interactive=False), state, *_updates(editing.STAGES, trace.record)
+                # Clear the prior result surface before any potentially long scene work.
+                yield None, gr.update(value=empty_splat_html(), visible=False), "", *_updates("editing", editing.STAGES, trace.record)
                 result = None
-                for item in editing.generate_prepared(str(source_path), request, trace.artifacts, prepared.scope, prepared.coverage, prepared.broad_warning):
+                for item in editing.run(str(source_copy), request, trace.artifacts):
                     if isinstance(item, StageEvent):
                         active_stage = item.stage
                         trace.add(item)
-                        yield gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(interactive=False), state, *_updates(editing.STAGES, trace.record)
+                        yield gr.update(), gr.update(), gr.update(), *_updates("editing", editing.STAGES, trace.record)
                     else:
                         result = item
                 if result is None:
                     raise RuntimeError("Text Manipulation returned no generated result.")
                 trace.finish(result)
                 viewer = _editing_viewer_update(result.metadata, trace.run_dir) if request.mode in EDITING_EXPLICIT_MODES else gr.update(value=empty_splat_html(), visible=False)
-                yield str(result.primary), viewer, gr.update(), gr.update(), gr.update(value=_editing_result_caption(trace.run_dir.name, request, result.primary)), gr.update(interactive=False), None, *_updates(editing.STAGES, trace.record)
+                yield str(result.primary), viewer, _editing_result_caption(trace.run_dir.name, request, result.primary), *_updates("editing", editing.STAGES, trace.record)
             except Exception as error:
                 trace.add(StageEvent(active_stage, "error", str(error)))
                 trace.add(StageEvent("Run failed", "error", str(error)))
@@ -628,24 +593,12 @@ def build_editing() -> gr.Blocks:
             request = editing.EditingRequest(str(record.get("mode", "")), str(request_data.get("prompt", "")), int(request_data.get("seed", 0)))
             run_dir = ASSETS / "editing" / "runs" / run_id
             viewer = _editing_viewer_update(result.get("metadata", {}), run_dir) if record.get("mode") in EDITING_EXPLICIT_MODES else gr.update(value=empty_splat_html(), visible=False)
-            preview_name = result.get("metadata", {}).get("scope_preview")
-            try:
-                preview = str(_safe_result_file(run_dir, preview_name)) if preview_name else None
-            except ValueError:
-                preview = None
-            details = ""
-            if isinstance(result.get("metadata"), dict) and "mask_coverage" in result["metadata"]:
-                restored = editing.PreparedEdit(Path(preview) if preview else run_dir / "scope_preview.mp4", str(result["metadata"].get("scope", "unknown")), float(result["metadata"]["mask_coverage"]), bool(result["metadata"].get("broad_target_warning", False)))
-                details = _editing_scope_details(restored)
             caption = _editing_result_caption(run_id, request, Path(primary)) if primary else ""
-            return loaded_source, primary, viewer, gr.update(value=preview, visible=bool(preview)), details, caption, gr.update(interactive=False), None, *_updates(editing.STAGES, record)
+            return loaded_source, primary, viewer, caption, *_updates("editing", editing.STAGES, record)
+        mode.change(lambda selected: _method_flow_change("editing", editing.STAGES, selected), mode, [*headers, *cards, run_total])
 
-        preview_button.click(preview_scope, [source, prompt, mode, seed], [output, splat_viewer, scope_preview, scope_details, result_caption, confirm_button, prepared_state, *headers, *cards], concurrency_limit=1, show_progress="hidden")
-        confirm_button.click(generate_approved, prepared_state, [output, splat_viewer, scope_preview, scope_details, result_caption, confirm_button, prepared_state, *headers, *cards], concurrency_limit=1, show_progress="hidden")
+        button.click(handle, [source, prompt, mode, seed], [output, splat_viewer, result_caption, *headers, *cards, run_total], concurrency_limit=1, show_progress="hidden")
         mode.change(_editing_method_change, mode, splat_viewer)
-        clear_gpu.click(_clear_gpu_memory, None, gpu_status, queue=False, show_progress="hidden")
         sample.click(_sample, None, source)
-        load.click(load_saved, saved, [source, output, splat_viewer, scope_preview, scope_details, result_caption, confirm_button, prepared_state, *headers, *cards])
-        load_query_clip.click(_load_selection_clip, query_clip, source)
-        refresh_query_clips.click(lambda: gr.update(choices=_selection_clip_choices()), None, query_clip, queue=False)
+        load.click(load_saved, saved, [source, output, splat_viewer, result_caption, *headers, *cards, run_total])
     return page

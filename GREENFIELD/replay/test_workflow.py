@@ -19,6 +19,17 @@ class WorkflowHeaderTest(unittest.TestCase):
         self.assertIn("Waiting", label)
         self.assertIn("—", label)
 
+
+    def test_later_event_does_not_complete_an_unstarted_stage(self) -> None:
+        """Workflow presentation must not infer completion from event ordering."""
+        label, state_class = workflow_header({
+            "mode": "explicit",
+            "events": [{"stage": "4D Gaussian fitting", "status": "running", "elapsed_seconds": 7}],
+        }, 2)
+
+        self.assertEqual(state_class, "evow-stage-waiting")
+        self.assertIn("Waiting", label)
+
     def test_running_stage_shows_blue_status_and_elapsed_duration(self) -> None:
         label, state_class = workflow_header({
             "mode": "explicit",

@@ -75,6 +75,12 @@ def run_implicit(
     if not (settings.anyview_repo / "scripts" / "infer.py").is_file():
         raise FileNotFoundError("AnyView-DVS checkout is missing.")
 
+    # Persist the active state before filesystem work so the dashboard never
+    # presents a completed camera setup while its episode is still being built.
+    yield {
+        "stage": "Camera setup", "status": "running",
+        "detail": "Packaging the fixed source camera and requested virtual camera.",
+    }
     episode = prepare_episode(frames, request, source_fov_degrees, run_dir, settings)
     yield {
         "stage": "Camera setup", "status": "complete",

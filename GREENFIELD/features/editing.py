@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
 import shutil
 import re
 from typing import Iterator
@@ -11,19 +10,20 @@ import numpy as np
 
 from GREENFIELD.app_core.contracts import FeatureResult, RunArtifacts, StageEvent, StageSpec
 from GREENFIELD.app_core.media import write_video
+from GREENFIELD.app_core.model_catalog import GROUNDING_DINO, GSPLAT, SAM2, VIDEO_DEPTH_ANYTHING, WAN_VACE
 from .scene_cache import ensure_scene_steps
 from .scene_masks import lift_masks, project_primitive_mask
 from .text_media import read_editing_episode, source_digest
-from .text_segmentation import expand_masks, full_scene_masks, ground_and_track, highlighted_frames
+from .text_segmentation import expand_masks, full_scene_masks, ground_and_track
 from .text_settings import load_text_settings
 from .video_edit import edit_video, vace_frame_count
 
 
 STAGES = (
     StageSpec("Inspect source episode", "Validate and decode one bounded editing episode from an uploaded or queried clip.", "GREENFIELD/features/text_media.py", "read_editing_episode", "source video", "bounded RGB frames · fps", "Source"),
-    StageSpec("Resolve edit scope", "Ground a named visual target when possible; otherwise use a deliberate full-scene edit mask.", "GREENFIELD/features/text_segmentation.py", "ground_and_track", "frames · instruction", "tracked target mask or full-scene mask", "Instruction"),
-    StageSpec("Prepare selected method", "Use the video mask directly for Implicit 3D or project it through a cached dynamic Gaussian scene for Explicit 3D.", "GREENFIELD/features/scene_masks.py", "project_primitive_mask", "source frames · masks · methodology", "VACE conditioning mask", "Methodology"),
-    StageSpec("Generate edit proposal", "Apply the instruction with local Wan VACE while preserving fixed-camera source context.", "GREENFIELD/features/video_edit.py", "edit_video", "frames · conditioning mask · instruction · seed", "generated RGB frames", "Instruction · Seed"),
+    StageSpec("Resolve edit scope", "Ground with Grounding DINO and track with SAM2 when possible; otherwise use a deliberate full-scene edit mask.", "GREENFIELD/features/text_segmentation.py", "ground_and_track", "frames · instruction", "tracked target mask or full-scene mask", "Instruction", model_refs=(GROUNDING_DINO, SAM2)),
+    StageSpec("Prepare selected method", "Use the video mask directly for Wan VACE or project it through cached dynamic 4D Gaussian primitives for Explicit 3D.", "GREENFIELD/features/scene_masks.py", "project_primitive_mask", "source frames · masks · methodology", "VACE conditioning mask", "Methodology", model_refs=(VIDEO_DEPTH_ANYTHING, GSPLAT)),
+    StageSpec("Generate edit proposal", "Apply the instruction with local Wan VACE while preserving fixed-camera source context.", "GREENFIELD/features/video_edit.py", "edit_video", "frames · conditioning mask · instruction · seed", "generated RGB frames", "Instruction · Seed", model_refs=(WAN_VACE,)),
     StageSpec("Save and render result", "Save generated video or fit and render an edited dynamic Gaussian scene.", "GREENFIELD/features/scene_cache.py", "ensure_scene_steps", "generated frames · methodology", "edited.mp4 · splats · trace.json", "Apply"),
 )
 
@@ -41,21 +41,6 @@ class EditingRequest:
             raise ValueError("Choose Implicit 3D or Explicit 3D.")
         if not self.prompt.strip():
             raise ValueError("Enter an editing instruction.")
-
-
-@dataclass(frozen=True)
-class PreparedEdit:
-    """A persisted, owner-approved VACE conditioning proposal.
-
-    This deliberately contains paths and small display metadata only. The
-    actual frames and masks live in the run directory, so confirmation can
-    resume safely after Gradio serializes its session state.
-    """
-
-    preview: Path
-    scope: str
-    coverage: float
-    broad_warning: bool
 
 
 SCENE_WIDE_TOKENS = frozenset({
@@ -91,18 +76,22 @@ def _copy_scene_splats(scene, artifacts: RunArtifacts) -> list[str]:
     return relative_paths
 
 
-def prepare(source: str, request: EditingRequest, artifacts: RunArtifacts) -> Iterator[StageEvent | PreparedEdit]:
-    """Persist and preview the exact editable region before VACE is allowed to run."""
+def run(source: str, request: EditingRequest, artifacts: RunArtifacts) -> Iterator[StageEvent | FeatureResult]:
+    """Resolve the edit scope, generate the proposal, and save the result in one pass."""
     request.validate()
     settings = load_text_settings()
+    yield StageEvent("Inspect source episode", "running", "Opening the source and validating a bounded VACE-compatible episode.")
+
     frames, fps = read_editing_episode(source, settings.episode_fps, settings.episode_max_frames)
-    valid_count = vace_frame_count(len(frames))
-    frames = frames[:valid_count]
+    frames = frames[:vace_frame_count(len(frames))]
     yield StageEvent(
         "Inspect source episode", "complete",
         f"Decoded {len(frames)} stationary-view frames ({len(frames) / fps:.2f}s) for text manipulation.",
         metrics={"frames": len(frames), "fps": fps, "episode_seconds": round(len(frames) / fps, 2)},
     )
+    # Grounding and temporal tracking can be expensive, so record its active
+    # state before invoking the local models.
+    yield StageEvent("Resolve edit scope", "running", "Grounding the requested target and tracking it through the episode.")
     track = ground_and_track(frames, request.prompt)
     scene_wide = _is_scene_wide_instruction(request.prompt)
     if track is None or scene_wide:
@@ -153,30 +142,7 @@ def prepare(source: str, request: EditingRequest, artifacts: RunArtifacts) -> It
     np.save(artifacts.file("edit_mask.npy"), conditioning_masks.astype(np.uint8))
     coverage = float(conditioning_masks.mean())
     broad_warning = scope == "grounded_target" and coverage > 0.75
-    preview_path = write_video(highlighted_frames(frames, conditioning_masks), artifacts.file("scope_preview.mp4"), fps)
-    detail = "Preview the highlighted region, then explicitly approve generation."
-    if broad_warning:
-        detail = "Warning: this named target covers over 75% of the frame. Review the highlighted region before approving generation."
-    yield StageEvent(
-        "Review edit scope", "complete", detail, preview=preview_path,
-        metrics={"scope": scope, "mask_coverage": round(coverage, 4), "broad_target_warning": broad_warning},
-    )
-    yield PreparedEdit(preview_path, scope, coverage, broad_warning)
 
-
-def generate_prepared(source: str, request: EditingRequest, artifacts: RunArtifacts, scope: str, coverage: float, broad_warning: bool) -> Iterator[StageEvent | FeatureResult]:
-    """Run VACE only after the persisted scope preview has been approved."""
-    request.validate()
-    settings = load_text_settings()
-    frames, fps = read_editing_episode(source, settings.episode_fps, settings.episode_max_frames)
-    frames = frames[:vace_frame_count(len(frames))]
-    mask_path = artifacts.file("edit_mask.npy")
-    if not mask_path.is_file():
-        raise ValueError("This edit preview has no saved conditioning mask; preview the scope again.")
-    conditioning_masks = np.load(mask_path).astype(bool)
-    expected = (len(frames), frames[0].shape[0], frames[0].shape[1])
-    if conditioning_masks.shape != expected:
-        raise ValueError("This edit preview no longer matches its source episode; preview the scope again.")
     yield StageEvent("Generate edit proposal", "running", "Loading local Wan VACE and generating the text-conditioned source-view proposal.")
     generated = edit_video(frames, conditioning_masks, request.prompt, request.seed)
     proposal_path = write_video(generated, artifacts.file("vace_proposal.mp4"), fps)
@@ -188,7 +154,7 @@ def generate_prepared(source: str, request: EditingRequest, artifacts: RunArtifa
     )
     metadata = {"generated": True, "mode": request.mode, "seed": request.seed, "scope": scope,
                 "mask_coverage": coverage, "broad_target_warning": broad_warning,
-                "scope_preview": "scope_preview.mp4", "proposal": proposal_path.name}
+                "proposal": proposal_path.name}
     if request.mode == "implicit":
         output = write_video(generated, artifacts.file("edited.mp4"), fps)
         yield StageEvent(
@@ -215,16 +181,3 @@ def generate_prepared(source: str, request: EditingRequest, artifacts: RunArtifa
         )
         metadata["viewer"] = {"splat_paths": splat_paths, "durations": [1 / fps] * len(splat_paths)}
     yield FeatureResult(primary=output, secondary=proposal_path, metadata=metadata)
-
-
-def run(source: str, request: EditingRequest, artifacts: RunArtifacts) -> Iterator[StageEvent | FeatureResult]:
-    """Compatibility adapter for non-UI callers; the dashboard uses two explicit steps."""
-    prepared = None
-    for item in prepare(source, request, artifacts):
-        if isinstance(item, PreparedEdit):
-            prepared = item
-        else:
-            yield item
-    if prepared is None:
-        raise RuntimeError("Text Manipulation did not prepare an edit scope.")
-    yield from generate_prepared(source, request, artifacts, prepared.scope, prepared.coverage, prepared.broad_warning)
