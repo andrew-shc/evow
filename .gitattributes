@@ -1,0 +1,4 @@
+# Curated video inputs are versioned with the source tree without putting their
+# binary contents into ordinary Git history. All files under this directory are
+# Git LFS objects, including future sample formats.
+ASSETS/samples/** filter=lfs diff=lfs merge=lfs -text

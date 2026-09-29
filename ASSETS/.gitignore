@@ -1,5 +1,8 @@
 *
 !.gitignore
 
-# whitelist convention
+# Curated, public replay inputs live here. They are intentionally tracked via
+# Git LFS (see /.gitattributes); keep all other generated/source assets ignored.
+!samples/
+!samples/**
 
