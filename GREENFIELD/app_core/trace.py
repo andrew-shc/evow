@@ -140,6 +140,7 @@ class FeatureTrace:
                 "semantic_mask_coverage": clip.semantic_mask_coverage,
                 "projected_mask_coverage": clip.projected_mask_coverage,
                 "projected_low_specificity": clip.projected_low_specificity,
+                "selected_splats": [relative(path) for path in clip.selected_splats],
             }
 
         self.record["result"] = {

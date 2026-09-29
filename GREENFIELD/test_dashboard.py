@@ -16,6 +16,9 @@ import gradio as gr
 
 from GREENFIELD.app_core.ui import config_caption, config_number, config_slider, config_textbox
 from GREENFIELD.dashboard import DASHBOARD_SUBTITLE, DASHBOARD_TITLE, FLOW_HEADER_CSS, FLOW_HEADER_JS, build_dashboard
+from GREENFIELD.features.pages import PROJECT_SAMPLE_VIDEOS, _sample_videos
+from GREENFIELD.replay.app import REPLAY_SAMPLE_VIDEOS
+from GREENFIELD.replay.app import _allowed_paths, settings
 
 
 def test_dashboard_composes_four_tabs_and_one_global_clear_button() -> None:
@@ -79,7 +82,35 @@ def test_dashboard_header_saved_runs_and_unavailable_mesh_choice_are_explicit() 
     assert all(component.label == "Choose a saved run" for component in saved if component is not replay_saved)
 
     assert all("evow-saved-run-dropdown" in component.elem_classes for component in saved)
+
+    source_menus = [
+        component for component in components
+        if isinstance(component, gr.Dropdown)
+        and ("Sample Video (Basic)", "sample_0") in component.choices
+    ]
+    assert len(source_menus) == 4
+    assert all(menu.choices[:3] == [
+        ("Sample Video (Basic)", "sample_0"),
+        ("Sample Video 1", "sample_1"),
+        ("Sample Video 2", "sample_2"),
+    ] for menu in source_menus)
+    assert all(menu.choices[3:] == [
+        ("Video File", "video_file"), ("Webcam", "webcam"),
+        ("USB Camera", "usb_camera"), ("Saved Run", "saved"),
+    ] for menu in source_menus)
+    source_previews = [
+        component for component in components
+        if isinstance(component, gr.Video) and "evow-source-video" in component.elem_classes
+    ]
+    assert len(source_previews) == 4
+    assert all(component.elem_id.endswith("-source-video") for component in source_previews)
+    assert all(component.format is None for component in source_previews)
+    assert "evow-source-loading::after" in FLOW_HEADER_CSS
+    assert "Loading video…" in FLOW_HEADER_CSS
+    assert "muteDashboardVideos" in FLOW_HEADER_JS
+    assert "finishSourceLoading" in FLOW_HEADER_JS
     assert 'input.setAttribute("placeholder", "Choose a saved run")' in FLOW_HEADER_JS
+
 
     replay_method = next(
         component
@@ -102,6 +133,28 @@ def test_dashboard_header_saved_runs_and_unavailable_mesh_choice_are_explicit() 
     assert all("evow-splat-viewer" in component.elem_classes for component in splat_viewers)
     assert all(component.padding is False for component in splat_viewers)
     assert '.evow-splat-viewer > label[data-testid="block-label"]' in FLOW_HEADER_CSS
+
+
+
+def test_project_sample_paths_and_hard_refresh_allowlist() -> None:
+    """Each tab owns its SP0X pair and Gradio can serve it after a refresh."""
+    assert [path.name for _label, path in REPLAY_SAMPLE_VIDEOS[1:]] == [
+        "sp01_app01_nasa_rocket.mp4", "sp01_app02_VIRAT.mp4",
+    ]
+    expected = {
+        "future": ("sp02_app01_ARECIBO_OBS_SHORT.mp4", "sp02_app02_tsunami.mp4"),
+        "selection": ("sp03_app01_river_flooding.mp4", "sp03_app02_flood_leakage.avi"),
+        "editing": ("sp04_app01_windsock.mp4", "sp04_app02_model_house_timelapse.mp4"),
+    }
+    for feature, filenames in expected.items():
+        assert PROJECT_SAMPLE_VIDEOS[feature] == _sample_videos(feature)[1:]
+        samples = _sample_videos(feature)
+        assert [path.name for _label, path in samples[1:]] == list(filenames)
+        assert all(label.startswith("Sample Video") for label, _path in samples)
+
+    allowed = _allowed_paths()
+    assert str(settings.assets / "replay" / "samples") in allowed
+    assert str(settings.assets / "samples") in allowed
 
 
 def test_shared_config_helpers_keep_labels_compact() -> None:

@@ -37,7 +37,7 @@ from GREENFIELD.app_core.model_catalog import GROUNDING_DINO, GSPLAT, SAM2, VIDE
 from GREENFIELD.app_core.super_stages import SuperStage
 from .scene_cache import ensure_scene_steps
 from .scene_masks import lift_masks, project_primitive_mask
-from .text_media import read_editing_episode, source_digest
+from .text_media import read_editing_episode, source_digest, trim_source
 from .text_segmentation import expand_masks, full_scene_masks, ground_and_track_steps
 from .text_settings import load_text_settings
 from .video_edit import edit_video_steps, vace_frame_count
@@ -292,6 +292,8 @@ class EditingRequest:
     mode: str
     prompt: str
     seed: int
+    trim_start_seconds: float = 0.0
+    trim_end_seconds: float | None = None
 
     def validate(self) -> None:
         if self.mode not in {"implicit", "explicit"}:
@@ -495,11 +497,20 @@ def run(source: str, request: EditingRequest, artifacts: RunArtifacts, settings=
 
     # Input: decode then trim to the VAE's 1 + 4k shape.
     yield _event("episode_decode", "running", "Opening the source and validating a bounded VACE-compatible episode.")
-    frames, fps = read_editing_episode(source, settings.episode_fps, settings.episode_max_frames)
+    if request.trim_end_seconds is None and request.trim_start_seconds == 0:
+        # Existing direct callers already supply a bounded source episode.
+        trim_start, trim_end = 0.0, None
+        frames, fps = read_editing_episode(source, settings.episode_fps, settings.episode_max_frames)
+    else:
+        trimmed_source, _trim_info, trim_start, trim_end = trim_source(
+            source, artifacts.file("trimmed_source.mp4"), request.trim_start_seconds,
+            request.trim_end_seconds, settings.episode_max_frames / settings.episode_fps,
+        )
+        frames, fps = read_editing_episode(str(trimmed_source), settings.episode_fps, settings.episode_max_frames)
     yield _event(
         "episode_decode", "complete",
         f"Decoded {len(frames)} stationary-view frames ({len(frames) / fps:.2f}s) for text manipulation.",
-        metrics={"frames": len(frames), "fps": fps, "episode_seconds": round(len(frames) / fps, 2)},
+        metrics={"frames": len(frames), "fps": fps, "episode_seconds": round(len(frames) / fps, 2), "trim_start_seconds": trim_start, "trim_end_seconds": trim_end},
     )
     yield _event("vace_trim", "running", "Trimming the episode to Wan VACE's 1 + 4k temporal frame shape.")
     total_frames = len(frames)

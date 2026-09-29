@@ -2,6 +2,8 @@
 
 import gradio as gr
 
+from GREENFIELD.replay import app as replay_app
+
 from GREENFIELD.dashboard import FLOW_HEADER_CSS
 from GREENFIELD.replay.app import _workflow_group_updates, build_app
 from GREENFIELD.replay.settings import load_settings
@@ -124,7 +126,43 @@ def test_replay_saved_runs_are_folded_into_the_source_menu():
         component for component in _components(page, gr.Dropdown)
         if component is not saved and component.label is None
     )
-    assert ("Saved run", "saved") in source_selector.choices
+    assert ("Saved Run", "saved") in source_selector.choices
+
+
+def test_output_identifies_the_derived_episode_as_preprocessed_input():
+    """The output preview must not be mistaken for the selected source video."""
+    page = build_app()
+    preview = _control(page, gr.Video, "Preprocessed Input")
+    assert preview.interactive is False
+
+
+def test_display_binds_only_the_preprocessed_episode_to_the_output_preview():
+    """Run snapshots keep source selection outside Replay's output updates."""
+    state = {
+        "preprocessed_input": "/runs/derived-episode.mp4",
+        "video": None,
+        "models": [],
+        "run_id": "run-1",
+        "trace": {"mode": "explicit", "workflow_version": 2, "events": []},
+    }
+    display = replay_app._display(state)
+    assert display[0] == "/runs/derived-episode.mp4"
+
+
+def test_saved_run_load_does_not_return_a_source_component_update(monkeypatch):
+    """Opening history must not overwrite the current source video control."""
+    state = {
+        "preprocessed_input": "/runs/derived-episode.mp4",
+        "video": None,
+        "models": [],
+        "run_id": "run-1",
+        "trace": {"mode": "explicit", "workflow_version": 2, "events": []},
+    }
+    monkeypatch.setattr(replay_app, "load_saved_run", lambda _run_id: state)
+    loaded = replay_app._load("run-1")
+    # The first return value resets Start (s); no value is returned for Source.
+    assert loaded[0]["value"] == 0
+    assert loaded[1] == "/runs/derived-episode.mp4"
 
 
 def test_atomic_stages_are_nested_under_stable_flow_groups():

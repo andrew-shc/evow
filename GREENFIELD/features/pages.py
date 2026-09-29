@@ -15,15 +15,39 @@ from GREENFIELD.app_core.contracts import FeatureResult, StageEvent, StageSpec
 from GREENFIELD.app_core.media import read_video, read_recent_window
 from GREENFIELD.app_core.trace import FeatureTrace, list_runs
 from GREENFIELD.app_core.timing import format_stopwatch
-from GREENFIELD.app_core.ui import APP_CSS, SAVED_RUN_PLACEHOLDER_JS, flat_config_number, flat_config_slider, flat_config_textbox, help_icon, run_total_update, source_and_saved_controls, stage_html, stage_label
+from GREENFIELD.app_core.ui import APP_CSS, SAVED_RUN_PLACEHOLDER_JS, flat_config_number, flat_config_slider, flat_config_textbox, flat_trim_range, trim_range_markup, help_icon, run_total_update, source_and_saved_controls, stage_html, stage_label
 from GREENFIELD.app_core.splat_viewer import empty_splat_html, splat_html
 from GREENFIELD.app_core.flow import CURRENT_FLOW_VERSION, LEGACY_FLOW_VERSION, RETIRED_STAGE_ALIASES, RETIRED_STAGE_ALIASES_BY_FEATURE, FeatureFlow, FlowStage, profile_id, resolve_flow, stage_applies
 from GREENFIELD.app_core.super_stages import available_super_stages, rollup_stage_states, super_stage_update
 from GREENFIELD.app_core.model_catalog import models_for
 from . import editing, future, selection
+from .text_media import probe_video
 
 ASSETS = Path(__file__).resolve().parents[2] / "ASSETS"
 SAMPLE_VIDEO = ASSETS / "replay" / "samples" / "trees_swaying_pexels_12644693.mp4"
+
+# Each dashboard project gets its matching SP0X pair. Keep these page-owned so
+# selecting a short source from one tab can never select a similarly numbered
+# sample on another tab.
+PROJECT_SAMPLE_VIDEOS = {
+    "future": (
+        ("Sample Video 1", ASSETS / "samples" / "sp02_app01_ARECIBO_OBS_SHORT.mp4"),
+        ("Sample Video 2", ASSETS / "samples" / "sp02_app02_tsunami.mp4"),
+    ),
+    "selection": (
+        ("Sample Video 1", ASSETS / "samples" / "sp03_app01_river_flooding.mp4"),
+                ("Sample Video 2", ASSETS / "samples" / "sp03_app02_flood_leakage.avi"),
+    ),
+    "editing": (
+        ("Sample Video 1", ASSETS / "samples" / "sp04_app01_windsock.mp4"),
+        ("Sample Video 2", ASSETS / "samples" / "sp04_app02_model_house_timelapse.mp4"),
+    ),
+}
+
+
+def _sample_videos(feature: str) -> tuple[tuple[str, Path], ...]:
+    """Return the basic sample plus the two curated videos for one dashboard page."""
+    return (("Sample Video (Basic)", SAMPLE_VIDEO), *PROJECT_SAMPLE_VIDEOS[feature])
 
 
 def _stage_has_terminal(trace: FeatureTrace, stage_id: str) -> bool:
@@ -201,7 +225,7 @@ def _selection_provenance(trace: dict) -> str:
 
 
 def _selection_viewer_update(metadata: dict, run_dir: Path) -> dict:
-    """Restore the selected structure as an orbitable solid-color 4D splat timeline."""
+    """Read legacy single-viewer metadata without weakening paired current results."""
     viewer = metadata.get("viewer") if isinstance(metadata, dict) else None
     if not isinstance(viewer, dict):
         return gr.update(value=empty_splat_html(), visible=True)
@@ -209,23 +233,80 @@ def _selection_viewer_update(metadata: dict, run_dir: Path) -> dict:
         paths = [_safe_result_file(run_dir, value) for value in viewer.get("splat_paths", [])]
     except ValueError:
         return gr.update(value=empty_splat_html(), visible=True)
+    durations = viewer.get("durations")
     if not paths:
         return gr.update(value=empty_splat_html(), visible=True)
-
-    durations = viewer.get("durations")
-    if not isinstance(durations, list) or len(durations) != len(paths): durations = [1 / 12] * len(paths)
+    if not isinstance(durations, list) or len(durations) != len(paths):
+        durations = [1 / 12] * len(paths)
     return gr.update(value=splat_html([str(path) for path in paths], durations, None), visible=True)
 
+
+def _selection_pair_records(clips: list[object], run_dir: Path | None = None, explicit: bool = True) -> list[dict[str, object]]:
+    """Build one selectable result record per match for either query method."""
+    records: list[dict[str, object]] = []
+    video_key = "projected_highlighted" if explicit else "highlighted"
+    for index, clip in enumerate(clips):
+        if isinstance(clip, dict):
+            if run_dir is None:
+                continue
+            try:
+                video = _safe_result_file(run_dir, clip.get(video_key))
+                splats = [_safe_result_file(run_dir, value) for value in clip.get("selected_splats", [])] if explicit else []
+                start, end = float(clip["start_seconds"]), float(clip["end_seconds"])
+            except (ValueError, TypeError, KeyError):
+                continue
+        else:
+            video = getattr(clip, video_key, None)
+            splats = list(getattr(clip, "selected_splats", ())) if explicit else []
+            start, end = float(getattr(clip, "start_seconds", 0)), float(getattr(clip, "end_seconds", 0))
+        if video is None or (explicit and not splats):
+            continue
+        records.append({"label": f"Match {index + 1} · {start:05.1f}s–{end:05.1f}s", "video": str(video), "splats": [str(path) for path in splats]})
+    return records
+
+
+def _selection_pair_update(choice: str | None, pairs: list[dict[str, object]]) -> tuple[dict, dict]:
+    """Update the single selected video and its optional Explicit 3D viewer."""
+    try:
+        pair = pairs[int(choice or 0)]
+        video = str(pair["video"])
+        splats = [str(path) for path in pair.get("splats", [])]
+    except (IndexError, TypeError, ValueError, KeyError):
+        return gr.update(value=None, visible=False), gr.update(value=empty_splat_html(), visible=False)
+    viewer = gr.update(value=splat_html(splats, [1 / 12] * len(splats), None), visible=True) if splats else gr.update(value=empty_splat_html(), visible=False)
+    return gr.update(value=video, visible=True), viewer
+
+
+def _trim_range_bounds(video: str | None, maximum_seconds: float, target_id: str) -> tuple[dict, dict]:
+    """Reset one custom two-handle trim bar and its hidden Gradio value."""
+    if not video:
+        duration = maximum_seconds
+    else:
+        try:
+            duration = probe_video(video).duration_seconds
+        except (OSError, ValueError):
+            duration = maximum_seconds
+    end = min(duration, maximum_seconds)
+    return gr.update(value=trim_range_markup(target_id, 0, end, duration)), gr.update(value=f"0,{end:.3f}")
+
+
+def _parse_trim_range(raw: object) -> tuple[float, float]:
+    """Validate the custom browser range before a run can consume it."""
+    try:
+        start_text, end_text = str(raw).split(",", 1)
+        start, end = float(start_text), float(end_text)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Trim range must contain a numeric start and end.") from error
+    if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
+        raise ValueError("Trim end must be after trim start.")
+    return start, end
 
 
 
 
 def _selection_method_change(mode: str) -> dict:
-    """Reserve a fresh 3D result panel as soon as Explicit 3D is selected."""
-    return gr.update(
-        value=empty_splat_html(),
-        visible=mode in SELECTION_EXPLICIT_MODES,
-    )
+    """Clear stale structure; a viewer appears only after an Explicit match exists."""
+    return gr.update(value=empty_splat_html(), visible=False)
 
 
 def _selection_config_visibility(mode: str) -> tuple[dict, ...]:
@@ -606,7 +687,7 @@ def _page(feature: str, title: str, source_label: str, controls: Callable[[], tu
                 gr.Markdown("## 1. Source " + help_icon("Searches a stationary-view upload for up to five non-overlapping four-second clips. Explicit 3D is an estimate from one fixed camera.", "Source limits"))
                 source, sample, saved, load = source_and_saved_controls(
                     source_label, list_runs(ASSETS, feature), f"ASSETS/{feature}/runs/",
-                    SAMPLE_VIDEO.is_file(), f"evow-{feature}-saved-runs", sample_path=str(SAMPLE_VIDEO),
+                    _sample_videos(feature), f"evow-{feature}-saved-runs",
                 )
                 inputs = controls()
                 gr.Markdown("## 4. Generate")
@@ -859,7 +940,7 @@ def build_future() -> gr.Blocks:
         with gr.Row():
             with gr.Column(scale=1):
                 gr.Markdown("## 1. Source " + help_icon("Uses only the final stationary-camera history window. Shorter videos use all available history.", "Observed-history limits"))
-                source, sample, saved, load = source_and_saved_controls("Observed camera history", list_runs(ASSETS, "future"), "ASSETS/future/runs/", SAMPLE_VIDEO.is_file(), "evow-future-saved-runs", sample_path=str(SAMPLE_VIDEO))
+                source, sample, saved, load = source_and_saved_controls("Observed camera history", list_runs(ASSETS, "future"), "ASSETS/future/runs/", _sample_videos("future"), "evow-future-saved-runs")
                 gr.Markdown("## 2. Methodology " + help_icon("Choose Explicit 3D, the base Stable Video Diffusion prior, or self-trained Stable Video Diffusion. The self-trained method learns only from pre-holdout source windows before forecasting the final tail.", "Methodology"))
                 mode = gr.Radio([("Explicit 3D", "explicit"), ("Implicit 3D [prior]", "implicit"), ("Implicit 3D [self-trained]", "self_trained")], value="explicit", show_label=False, elem_classes="evow-method-choice")
                 with gr.Accordion("Configuration", elem_classes="evow-config-panel", open=False):
@@ -1033,7 +1114,7 @@ def build_selection() -> gr.Blocks:
         with gr.Row():
             with gr.Column(scale=1):
                 gr.Markdown("## 1. Source " + help_icon("Searches a stationary-view upload for up to five non-overlapping four-second clips. Explicit 3D is an estimate from one fixed camera.", "Source limits"))
-                source, sample, saved, load = source_and_saved_controls("Source video (up to 5 minutes)", list_runs(ASSETS, "selection"), "ASSETS/selection/runs/", SAMPLE_VIDEO.is_file(), "evow-selection-saved-runs", sample_path=str(SAMPLE_VIDEO))
+                source, sample, saved, load = source_and_saved_controls("Source video (up to 5 minutes)", list_runs(ASSETS, "selection"), "ASSETS/selection/runs/", _sample_videos("selection"), "evow-selection-saved-runs")
                 gr.Markdown("## 2. Query")
                 query = gr.Textbox(label="Query", placeholder="dark clouds above moving tree branches", container=False)
                 gr.Markdown("## 3. Methodology " + help_icon("Choose Explicit 3D to lift tracked masks through Video Depth Anything + gsplat, or Implicit 3D for direct video masks. Exact active models appear in the internal-flow stages.", "Methodology"))
@@ -1047,6 +1128,8 @@ def build_selection() -> gr.Blocks:
                         max_source = flat_config_number("Max source (s)", settings.query_max_source_seconds, minimum=1, maximum=3600, detail="Maximum source duration searched before SigLIP retrieval sampling stops.")
                         sample_fps = flat_config_number("Sample FPS", settings.query_sample_fps, minimum=1, maximum=30, detail="Rate at which source frames are sampled for SigLIP text/video retrieval.")
                         clip_seconds = flat_config_number("Clip (s)", settings.query_clip_seconds, minimum=1, maximum=30, detail="Duration represented by each candidate interval before grounding and reranking.")
+                        trim_ui = flat_trim_range("Trim video", "selection-trim-range-value", settings.query_max_source_seconds, detail="Choose the original-video interval processed by this non-destructive query run.")
+                        trim_range = gr.Textbox(value=f"0,{settings.query_max_source_seconds:.3f}", visible=False, elem_id="selection-trim-range-value")
                     with gr.Column(visible=True) as results_group:
                         result_fps = flat_config_number("Result FPS", settings.query_result_fps, minimum=1, maximum=30, detail="Decode and export rate for each returned source and highlighted clip.")
                         max_results = flat_config_number("Max results", settings.query_max_results, minimum=1, maximum=50, detail="Maximum final matching clips returned to the result gallery.")
@@ -1061,33 +1144,47 @@ def build_selection() -> gr.Blocks:
                 button = gr.Button("Search", variant="primary")
             with gr.Column(scale=2):
                 gr.Markdown("## 5. Highlighted matching clips " + help_icon("Explicit mode shows selected 4D Gaussian structure in solid magenta; it is an orbitable structure viewer, not a projected video mask.", "3D structure viewer"), elem_classes="evow-section-heading")
-                semantic_gallery = gr.HTML(value=_selection_player_html([]), container=False, padding=False, elem_classes="evow-video-list-output")
-                splat_viewer = gr.HTML(value=empty_splat_html(), label="3D View", show_label=True, container=True, padding=False, elem_classes=["evow-splat-viewer"], elem_id="selection-splat-viewer", visible=True)
+                # Both methods begin with one empty selector. A completed search
+                # fills it with results and shows just the chosen source-view clip.
+                semantic_gallery = gr.HTML(value=_selection_player_html([]), visible=False, container=False, padding=False, elem_classes="evow-video-list-output")
+                explicit_match = gr.Dropdown(label="Explicit match", choices=[], visible=True)
+                explicit_video = gr.Video(label="Selected match", interactive=False, visible=False, elem_classes="evow-media")
+                explicit_pairs = gr.State([])
+                splat_viewer = gr.HTML(value=empty_splat_html(), label="3D View", show_label=True, container=True, padding=False, elem_classes=["evow-splat-viewer"], elem_id="selection-splat-viewer", visible=False)
         groups, headers, cards, run_total = _flow("selection")
         def handle(video, text, selected_mode, *values):
+            # Direct Python callers may omit trim values; browser wiring always
+            # supplies them before the configuration snapshot.
+            if len(values) == len(_EDITABLE_TEXT_FIELDS):
+                trim_start_seconds, trim_end_seconds, values = 0.0, None, values
+            else:
+                trim_range_value, *values = values
+                trim_start_seconds, trim_end_seconds = _parse_trim_range(trim_range_value)
             # Parse every editable knob before any work so an invalid control fails
             # under its field name without half-starting a run.
             effective = _text_effective_settings(settings, *values)
-            yield _selection_player_html([]), gr.update(value=empty_splat_html(), visible=selected_mode in SELECTION_EXPLICIT_MODES), *_updates("selection", {"mode": selected_mode, "events": []})
-            request = selection.SelectionRequest(selected_mode, text)
+            yield gr.update(value=_selection_player_html([]), visible=False), gr.update(choices=[], value=None, visible=True), gr.update(value=None, visible=False), [], gr.update(value=empty_splat_html(), visible=False), *_updates("selection", {"mode": selected_mode, "events": []})
+            request = selection.SelectionRequest(selected_mode, text, float(trim_start_seconds), None if trim_end_seconds is None else float(trim_end_seconds))
             # The adapter seam is generic, so bind the effective settings into the
             # selection run without widening ``SelectionRequest`` (which the trace
             # persists as JSON and must stay serializable).
             adapter = partial(selection.run, settings=effective)
             for result, trace in _execute_source_adapter_stream("selection", selected_mode, video, request, adapter):
-                semantic = _selection_player_html(_live_selection_gallery(result)) if result else gr.update()
-                if result and selected_mode in SELECTION_EXPLICIT_MODES:
-                    viewer = _selection_viewer_update(result.metadata, result.clips[0].source.parent.parent)
-                elif selected_mode in SELECTION_EXPLICIT_MODES:
-                    viewer = gr.update(visible=True)
+                pairs = _selection_pair_records(result.clips, explicit=selected_mode in SELECTION_EXPLICIT_MODES) if result else []
+                if pairs:
+                    match = gr.update(choices=[(pair["label"], str(index)) for index, pair in enumerate(pairs)], value="0", visible=True)
+                    paired_video, viewer = _selection_pair_update("0", pairs)
                 else:
+                    match = gr.update(choices=[], value=None, visible=True)
+                    paired_video = gr.update(value=None, visible=False)
                     viewer = gr.update(value=empty_splat_html(), visible=False)
-                yield semantic, viewer, *_updates("selection", trace)
+                yield gr.update(value=_selection_player_html([]), visible=False), match, paired_video, pairs, viewer, *_updates("selection", trace)
         def load_saved(run_id):
             loaded_source, _primary, _rows, trace = _load_saved("selection", run_id); clips = ((trace.get("result") or {}).get("clips") or []); run_dir = ASSETS / "selection" / "runs" / run_id
-            metadata = ((trace.get("result") or {}).get("metadata") or {})
-            viewer = _selection_viewer_update(metadata, run_dir) if trace.get("mode") in SELECTION_EXPLICIT_MODES else gr.update(value=empty_splat_html(), visible=False)
-            return loaded_source, _selection_player_html(_selection_gallery_items(clips, run_dir)), viewer, *_updates("selection", trace, is_saved=True)
+            pairs = _selection_pair_records(clips, run_dir, explicit=trace.get("mode") in SELECTION_EXPLICIT_MODES)
+            match = gr.update(choices=[(pair["label"], str(index)) for index, pair in enumerate(pairs)], value="0" if pairs else None, visible=True)
+            paired_video, viewer = _selection_pair_update("0", pairs) if pairs else (gr.update(value=None, visible=False), gr.update(value=empty_splat_html(), visible=False))
+            return loaded_source, gr.update(value=_selection_player_html([]), visible=False), match, paired_video, pairs, viewer, *_updates("selection", trace, is_saved=True)
         mode.change(_selection_method_change, mode, splat_viewer)
         # Group order must match ``_selection_config_visibility``'s tuple.
         mode.change(
@@ -1103,9 +1200,11 @@ def build_selection() -> gr.Blocks:
             grounding, coverage,
             source_fov, cache_version,
         ]
-        button.click(handle, [source, query, mode, *config_inputs], [semantic_gallery, splat_viewer, *groups, *headers, *cards, run_total], concurrency_limit=1, show_progress="hidden")
+        button.click(handle, [source, query, mode, trim_range, *config_inputs], [semantic_gallery, explicit_match, explicit_video, explicit_pairs, splat_viewer, *groups, *headers, *cards, run_total], concurrency_limit=1, show_progress="hidden")
+        explicit_match.change(_selection_pair_update, [explicit_match, explicit_pairs], [explicit_video, splat_viewer], queue=False)
+        source.change(lambda video: _trim_range_bounds(video, settings.query_max_source_seconds, "selection-trim-range-value"), source, [trim_ui, trim_range], queue=False)
         sample.click(_sample, None, source)
-        load.change(load_saved, saved, [source, semantic_gallery, splat_viewer, *groups, *headers, *cards, run_total])
+        load.change(load_saved, saved, [source, semantic_gallery, explicit_match, explicit_video, explicit_pairs, splat_viewer, *groups, *headers, *cards, run_total])
     return page
 
 
@@ -1185,7 +1284,7 @@ def build_editing() -> gr.Blocks:
                 gr.Markdown("## 1. Source " + help_icon("Upload one episode up to 6.75 seconds, or load a raw Text Query result. The yellow query overlay is never used as edit input; explicit geometry is estimated.", "Editing source limits"))
                 source, sample, saved, load = source_and_saved_controls(
                     "Short source episode", list_runs(ASSETS, "editing"), "ASSETS/editing/runs/",
-                    SAMPLE_VIDEO.is_file(), "evow-editing-saved-runs", sample_path=str(SAMPLE_VIDEO),
+                    _sample_videos("editing"), "evow-editing-saved-runs",
                 )
                 gr.Markdown("## 2. Instruction")
                 prompt = gr.Textbox(label="Instruction", placeholder="flood the forest while preserving the fixed camera view", container=False)
@@ -1203,6 +1302,8 @@ def build_editing() -> gr.Blocks:
                     with gr.Column(visible=True) as episode_group:
                         episode_fps = flat_config_number("Episode FPS", settings.episode_fps, minimum=1, maximum=60, detail="Sampling rate for the bounded source episode supplied to Wan VACE or Explicit 3D reconstruction.")
                         episode_frames = flat_config_number("Episode frames", settings.episode_max_frames, minimum=5, maximum=81, detail="Maximum source frames; Wan VACE uses a 1 + 4k frame shape and trims to the previous valid count.")
+                        trim_ui = flat_trim_range("Trim video", "editing-trim-range-value", settings.episode_seconds, detail="Choose the original-video interval processed by this non-destructive editing run.")
+                        trim_range = gr.Textbox(value=f"0,{settings.episode_seconds:.3f}", visible=False, elem_id="editing-trim-range-value")
                     with gr.Column(visible=True) as edit_group:
                         max_side = flat_config_number("Max side", settings.edit_max_side, minimum=64, maximum=2160, detail="Maximum generated edit width/long edge processed by Wan VACE.")
                         max_height = flat_config_number("Max height", settings.edit_max_height, minimum=64, maximum=2160, detail="Maximum generated edit height processed by Wan VACE.")
@@ -1226,12 +1327,19 @@ def build_editing() -> gr.Blocks:
         groups, headers, cards, run_total = _flow("editing")
 
         def handle(video, instruction, selected_mode, selected_seed, *values):
+            # Direct Python callers may omit trim values; browser wiring always
+            # supplies them before the configuration snapshot.
+            if len(values) == len(_EDITABLE_EDITING_FIELDS):
+                trim_start_seconds, trim_end_seconds, values = 0.0, None, values
+            else:
+                trim_range_value, *values = values
+                trim_start_seconds, trim_end_seconds = _parse_trim_range(trim_range_value)
             # Parse every editable knob before any work so an invalid control fails
             # under its field name without half-starting a run.
             effective = _editing_effective_settings(settings, *values)
             if not video:
                 raise gr.Error("Choose a stationary-view video first.")
-            request = editing.EditingRequest(selected_mode, instruction, int(selected_seed or 0))
+            request = editing.EditingRequest(selected_mode, instruction, int(selected_seed or 0), float(trim_start_seconds), None if trim_end_seconds is None else float(trim_end_seconds))
             trace = _new_feature_trace("editing", selected_mode, {**request.__dict__, "source_name": Path(video).name})
             # The pre-adapter work belongs to the flow's first declared stage, so
             # seed both its label and its stable id; an early failure then repaints
@@ -1314,7 +1422,8 @@ def build_editing() -> gr.Blocks:
             grounding,
             source_fov, cache_version,
         ]
-        button.click(handle, [source, prompt, mode, seed, *config_inputs], [output, splat_viewer, result_caption, *groups, *headers, *cards, run_total], concurrency_limit=1, show_progress="hidden")
+        button.click(handle, [source, prompt, mode, seed, trim_range, *config_inputs], [output, splat_viewer, result_caption, *groups, *headers, *cards, run_total], concurrency_limit=1, show_progress="hidden")
+        source.change(lambda video: _trim_range_bounds(video, settings.episode_seconds, "editing-trim-range-value"), source, [trim_ui, trim_range], queue=False)
         mode.change(_editing_method_change, mode, splat_viewer)
         # Group order must match ``_editing_config_visibility``'s tuple.
         mode.change(

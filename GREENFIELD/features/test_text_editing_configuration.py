@@ -312,7 +312,7 @@ def test_editing_panel_defaults_equal_tracked_settings_with_descriptions() -> No
     controls = {
         component.label: component
         for component in page.blocks.values()
-        if isinstance(component, (gr.Number, gr.Slider, gr.Textbox)) and _in_configuration(component)
+        if isinstance(component, (gr.Number, gr.Slider, gr.Textbox)) and component.label is not None and _in_configuration(component)
     }
     expected = {
         "Episode FPS": settings.episode_fps,

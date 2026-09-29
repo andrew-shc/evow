@@ -2,7 +2,7 @@
 
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import quote
 
 import gradio as gr
@@ -207,6 +207,34 @@ def flat_config_textbox(label: str, value, detail: str = "", **kwargs):
         ),
     )
 
+
+def trim_range_markup(target_id: str, start: float, end: float, maximum: float) -> str:
+    """Return one accessible two-handle range control backed by a hidden field."""
+    start = max(0.0, min(float(start), float(maximum)))
+    end = max(start, min(float(end), float(maximum)))
+    return (
+        f'<div class="evow-trim-range" data-evow-trim-target="{escape(target_id, quote=True)}">'
+        '<div class="evow-trim-track"></div><div class="evow-trim-fill"></div>'
+        f'<input type="range" min="0" max="{maximum:g}" step="0.1" value="{start:g}" aria-label="Trim start">'
+        f'<input type="range" min="0" max="{maximum:g}" step="0.1" value="{end:g}" aria-label="Trim end">'
+        f'<output>{start:.1f}s – {end:.1f}s</output></div>'
+    )
+
+
+def flat_trim_range(label: str, target_id: str, maximum: float, detail: str = "") -> gr.HTML:
+    """Add a custom two-ended temporal range bar to a compact config row.
+
+    Gradio 5.50 has no RangeSlider component. The root dashboard script mirrors
+    this control's two values into the hidden Gradio Textbox named by target_id.
+    """
+    return config_row(
+        label, detail,
+        lambda classes: gr.HTML(
+            value=trim_range_markup(target_id, 0, maximum, maximum),
+            container=False, padding=False, elem_classes=list(classes),
+        ),
+    )
+
 def run_total_update(trace: dict, notice: str = "") -> dict:
     """Render one page-level total from the latest persisted trace event.
 
@@ -352,23 +380,40 @@ def source_and_saved_controls(
     source_label: str,
     saved_choices: list[tuple[str, str]],
     registry: str,
-    sample_available: bool,
+    sample_videos: Sequence[tuple[str, str | Path]],
     saved_id: str | None = None,
-    sample_path: str | None = None,
 ) -> tuple[Any, Any, Any, Any]:
-    """Offer one source menu, including a saved-run route that opens its picker.
+    """Offer named bundled samples alongside upload, camera, and saved-run routes.
 
     The saved picker remains subordinate to the main source choice, but its
     native menu is focused and opened as soon as that route becomes visible.
     This prevents a user from reaching an empty, read-only source field first.
+    Each page supplies its basic sample plus its two project-specific curated
+    samples, so short labels remain consistent while paths stay page-owned.
     """
-    default_mode = "sample" if sample_available and sample_path else "video_file"
+    sample_by_mode = {
+        f"sample_{index}": (label, str(path))
+        for index, (label, path) in enumerate(sample_videos)
+    }
+    available_samples = {mode for mode, (_label, path) in sample_by_mode.items() if Path(path).is_file()}
+    default_mode = next((mode for mode in sample_by_mode if mode in available_samples), "video_file")
+    selector_choices = [(label, mode) for mode, (label, _path) in sample_by_mode.items()]
+    selector_choices += [("Video File", "video_file"), ("Webcam", "webcam"), ("USB Camera", "usb_camera"), ("Saved Run", "saved")]
+    source_id = f"{saved_id or source_label}-source-video"
     selector = gr.Dropdown(
-        [("Sample video", "sample"), ("Video file", "video_file"), ("Webcam", "webcam"), ("USB camera", "usb_camera"), ("Saved run", "saved")],
+        selector_choices,
         value=default_mode, label=None, show_label=False, container=False,
+        elem_classes="evow-main-source-dropdown",
     )
-    source = gr.Video(value=sample_path if default_mode == "sample" else None, label="Sample video" if default_mode == "sample" else "Video file", sources=["upload"], format="mp4", elem_classes="evow-media")
-    sample = gr.Button("Use Sample", interactive=sample_available, visible=False)
+    default_label, default_path = sample_by_mode.get(default_mode, ("Video File", None))
+    # Do not request Gradio's MP4 conversion here: when the selected sample is
+    # an AVI, it can overwrite that LFS-managed source in place.
+    source = gr.Video(
+        value=default_path, label=default_label, sources=["upload"], format=None,
+        elem_id=source_id, elem_classes=["evow-media", "evow-source-video"],
+    )
+    # Kept hidden for the existing programmatic basic-sample reset callbacks.
+    sample = gr.Button("Use Sample", interactive=bool(available_samples), visible=False)
     webcam = gr.Video(label="Webcam", sources=["webcam"], format="mp4", visible=False, elem_classes="evow-media")
     webcam.change(lambda path: path, webcam, source, queue=False, show_progress="hidden")
     with gr.Column(visible=False) as live_panel:
@@ -409,34 +454,42 @@ def source_and_saved_controls(
             )
             gr.Markdown(help_icon(f"Choose a completed run from `{registry}`. Its source remains immutable.", "Saved run"), container=False, padding=False, elem_classes="evow-inline-help-icon")
     def choose_source(mode: str):
-        if mode == "sample":
-            source_update = gr.update(value=sample_path if sample_available else None, visible=True, label="Sample video", interactive=False)
+        if mode in sample_by_mode:
+            label, path = sample_by_mode[mode]
+            source_update = gr.update(value=path if mode in available_samples else None, visible=True, label=label, interactive=False)
         elif mode == "video_file":
-            source_update = gr.update(value=None, visible=True, label="Video file", interactive=True)
+            source_update = gr.update(value=None, visible=True, label="Video File", interactive=True)
         elif mode == "saved":
-            source_update = gr.update(value=None, visible=True, label="Saved source", interactive=False)
+            source_update = gr.update(value=None, visible=True, label="Saved Source", interactive=False)
         else:
             source_update = gr.update(value=None, visible=False)
         return source_update, gr.update(visible=mode == "webcam"), gr.update(visible=mode == "usb_camera"), gr.update(visible=mode == "saved")
 
-    # The client hook starts before the server has applied the visibility update,
-    # so retry briefly across render frames until the newly shown picker exists.
-    open_saved_picker_js = None
-    if saved_id:
-        open_saved_picker_js = f"""(mode) => {{
-          if (mode === "saved") {{
-            let attempts = 0;
-            const openPicker = () => {{
-              const input = document.getElementById({saved_id!r})?.querySelector("input");
-              if (input && input.offsetParent) {{ input.focus(); input.click(); return; }}
-              if (++attempts < 20) window.setTimeout(openPicker, 25);
-            }};
-            window.setTimeout(openPicker, 0);
-          }}
-          return [mode];
-        }}"""
+    # This hook runs before Gradio sends the source selection to the server, so
+    # users see that a long bundled sample was selected immediately. The shared
+    # dashboard listener clears it only when the replacement video is playable.
+    source_change_js = f"""(mode) => {{
+      const source = document.getElementById({source_id!r});
+      if (String(mode).startsWith("sample_")) {{
+        source?.classList.add("evow-source-loading");
+        source?.setAttribute("aria-busy", "true");
+      }} else {{
+        source?.classList.remove("evow-source-loading");
+        source?.removeAttribute("aria-busy");
+      }}
+      if (mode === "saved") {{
+        let attempts = 0;
+        const openPicker = () => {{
+          const input = document.getElementById({saved_id!r})?.querySelector("input");
+          if (input && input.offsetParent) {{ input.focus(); input.click(); return; }}
+          if (++attempts < 20) window.setTimeout(openPicker, 25);
+        }};
+        window.setTimeout(openPicker, 0);
+      }}
+      return [mode];
+    }}"""
     selector.change(
         choose_source, selector, [source, webcam, live_panel, saved_panel],
-        queue=False, show_progress="hidden", js=open_saved_picker_js,
+        queue=False, show_progress="hidden", js=source_change_js,
     )
     return source, sample, saved, saved

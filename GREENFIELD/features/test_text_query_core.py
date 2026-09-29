@@ -78,6 +78,19 @@ def test_clip_decode_and_highlight_preserve_full_frame_geometry(tmp_path: Path) 
     assert not np.array_equal(highlighted[0][10, 12], decoded[0][10, 12])
 
 
+
+def test_trim_source_is_non_destructive_and_enforces_the_selected_window(tmp_path: Path) -> None:
+    """A trim becomes a run-owned clip while the original recording is untouched."""
+    source = tmp_path / "source.mp4"
+    original = write_video(_frames(24), source, 12).read_bytes()
+    trimmed, info, start, end = text_media.trim_source(str(source), tmp_path / "trimmed.mp4", 0.5, 1.5, 2)
+    assert source.read_bytes() == original
+    assert trimmed.is_file()
+    assert (start, end) == (0.5, 1.5)
+    assert 0.8 <= info.duration_seconds <= 1.2
+    with pytest.raises(ValueError, match="exceeding"):
+        text_media.trim_source(str(source), tmp_path / "too-long.mp4", 0, 2, 1)
+
 def test_grounding_success_and_no_match_are_explicit(monkeypatch) -> None:
     """The tracker returns a real target mask or no result, never a fabricated one."""
     frames = _frames(3)

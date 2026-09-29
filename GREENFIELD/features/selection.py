@@ -19,7 +19,7 @@ from GREENFIELD.app_core.model_catalog import FAISS, GROUNDING_DINO, GSPLAT, SAM
 from GREENFIELD.app_core.super_stages import SuperStage
 from .scene_cache import ensure_scene_steps
 from .scene_masks import export_selected_splats, lift_masks, project_primitive_mask
-from .text_media import read_interval, read_uniform_samples, source_digest, timestamp_label
+from .text_media import read_interval, read_uniform_samples, source_digest, timestamp_label, trim_source
 from .text_models import semantic_scores_steps
 from .text_retrieval import ranked_windows
 from .text_segmentation import ground_and_track_steps, highlighted_frames
@@ -304,6 +304,8 @@ class SelectionRequest:
 
     mode: str
     query: str
+    trim_start_seconds: float = 0.0
+    trim_end_seconds: float | None = None
 
     def validate(self) -> None:
         if self.mode not in {"implicit", "explicit"}:
@@ -354,15 +356,27 @@ def run(source: str, request: SelectionRequest, artifacts: RunArtifacts, setting
     request.validate()
     settings = settings or load_text_settings()
     yield _event("inspect_source", "running", "Opening the bounded source video and scheduling uniform retrieval samples.")
-    sparse_frames, timestamps, info = read_uniform_samples(source, settings.query_sample_fps, settings.query_max_source_seconds)
+    if request.trim_end_seconds is None and request.trim_start_seconds == 0:
+        # Preserve the public adapter's historical no-trim call contract.
+        source_offset = 0.0
+        sparse_frames, timestamps, info = read_uniform_samples(source, settings.query_sample_fps, settings.query_max_source_seconds)
+        trim_end = info.duration_seconds
+    else:
+        trimmed_source, _trim_info, source_offset, trim_end = trim_source(
+            source, artifacts.file("trimmed_source.mp4"), request.trim_start_seconds,
+            request.trim_end_seconds, settings.query_max_source_seconds,
+        )
+        source = str(trimmed_source)
+        sparse_frames, timestamps, info = read_uniform_samples(source, settings.query_sample_fps, settings.query_max_source_seconds)
     yield _event(
         "inspect_source", "complete",
-        f"Sampled {len(sparse_frames)} retrieval frames across {info.duration_seconds:.1f}s of source video.",
+        f"Trimmed {source_offset:.1f}s–{trim_end:.1f}s and sampled {len(sparse_frames)} retrieval frames.",
         metrics={
             "source_seconds": round(info.duration_seconds, 2),
             "duration_seconds": round(info.duration_seconds, 2),
             "sample_frames": len(sparse_frames),
             "sample_fps": settings.query_sample_fps,
+            "trim_start_seconds": source_offset, "trim_end_seconds": trim_end,
         },
     )
     score_stream = _consume_retrieval(sparse_frames, request.query)
@@ -544,7 +558,7 @@ def run(source: str, request: SelectionRequest, artifacts: RunArtifacts, setting
             write_video(highlighted_frames(clip_frames, projected_masks), projected_path, clip_fps)
         preview_path = artifacts.file(f"previews/{clip_index:02d}_semantic_highlighted.png")
         imageio.imwrite(preview_path, semantic_frames[len(semantic_frames) // 2])
-        clip = ClipArtifact(raw_path, semantic_path, candidate.start_seconds, candidate.end_seconds, float(method_score), request.mode, projected_path, track.box.confidence, semantic_coverage, projected_coverage, projected_low_specificity, selected_splats)
+        clip = ClipArtifact(raw_path, semantic_path, candidate.start_seconds + source_offset, candidate.end_seconds + source_offset, float(method_score), request.mode, projected_path, track.box.confidence, semantic_coverage, projected_coverage, projected_low_specificity, selected_splats)
         clips.append(clip)
         highlighted_total += len(semantic_frames)
         yield _event(
@@ -629,7 +643,8 @@ def run(source: str, request: SelectionRequest, artifacts: RunArtifacts, setting
              round(clip.score, 3), clip.method] for clip in clips]
     yield FeatureResult(clips=clips, rows=rows, metadata={
         "query": request.query.strip(), "mode": request.mode, "source_seconds": info.duration_seconds,
+        "trim_start_seconds": source_offset, "trim_end_seconds": trim_end,
         "clip_seconds": settings.query_clip_seconds, "generated": False,
         "provenance": {"pipeline_revision": TEXT_QUERY_PIPELINE_REVISION, "source_sha256": digest, "semantic_model": getattr(settings, "semantic_model_id", "test-model"), "grounding_model": getattr(settings, "grounding_model_id", "test-model"), "segmentation_model": getattr(settings, "segmentation_model_id", "test-model")},
-        "viewer": {"splat_paths": [str(path.relative_to(artifacts.run_dir)) for path in clips[0].selected_splats], "durations": [1 / info.fps] * len(clips[0].selected_splats)} if request.mode == "explicit" and clips[0].selected_splats else None,
+        "viewer": None,
     })

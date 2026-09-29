@@ -8,6 +8,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from GREENFIELD.app_core.media import write_video
+
 
 @dataclass(frozen=True)
 class VideoInfo:
@@ -121,6 +123,21 @@ def read_editing_episode(path: str, fps: float, maximum_frames: int) -> tuple[li
             f"({maximum_frames} frames at {fps:g} fps). Use a Text Query result or trim the source video."
         )
     return read_interval(path, 0, min(info.duration_seconds, maximum_seconds), fps)
+
+
+def trim_source(path: str, destination: Path, start_seconds: float, end_seconds: float | None, maximum_seconds: float) -> tuple[Path, VideoInfo, float, float]:
+    """Write a run-owned temporal interval without changing the uploaded video."""
+    info = probe_video(path)
+    start = float(start_seconds)
+    end = info.duration_seconds if end_seconds is None else float(end_seconds)
+    if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start or end > info.duration_seconds + 1e-3:
+        raise ValueError("Trim Start and End must be finite source timestamps with End after Start.")
+    duration = end - start
+    if duration > maximum_seconds + 1e-3:
+        raise ValueError(f"The selected trim is {duration:.2f}s, exceeding this page's {maximum_seconds:g}s limit.")
+    frames, output_fps = read_interval(path, start, duration, info.fps)
+    write_video(frames, destination, output_fps)
+    return destination, probe_video(str(destination)), start, end
 
 
 def timestamp_label(seconds: float) -> str:

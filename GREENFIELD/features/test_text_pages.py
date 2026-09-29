@@ -251,7 +251,7 @@ def test_selection_configuration_panel_matches_tracked_settings() -> None:
     controls = {
         component.label: component
         for component in page.blocks.values()
-        if isinstance(component, (gr.Number, gr.Slider, gr.Textbox)) and _in_configuration(component)
+        if isinstance(component, (gr.Number, gr.Slider, gr.Textbox)) and component.label is not None and _in_configuration(component)
     }
     expected = {
         "Max source (s)": settings.query_max_source_seconds,
@@ -274,18 +274,25 @@ def test_selection_configuration_panel_matches_tracked_settings() -> None:
         assert "evow-config-row" in controls[label].parent.elem_classes
 
 
+def test_text_trim_controls_use_one_custom_two_handle_range() -> None:
+    """Pinned Gradio has no RangeSlider, so both pages use the shared DOM control."""
+    for page in (pages.build_selection(), pages.build_editing()):
+        controls = [component for component in page.blocks.values() if isinstance(component, gr.HTML)]
+        assert any('class="evow-trim-range"' in str(control.value) and str(control.value).count('type="range"') == 2 for control in controls)
+
+
 def test_selection_button_wiring_matches_editable_field_order() -> None:
     """The Configuration controls reach ``handle`` in ``_EDITABLE_TEXT_FIELDS`` order."""
     page = pages.build_selection()
     handle = next(fn for fn in page.fns.values() if getattr(fn.fn, "__name__", "") == "handle")
 
-    assert [component.label for component in handle.inputs[:3]] == ["Sample video", "Query", None]
+    assert [component.label for component in handle.inputs[:3]] == ["Sample Video (Basic)", "Query", None]
     assert [component.label for component in handle.inputs[3:]] == [
-        "Max source (s)", "Sample FPS", "Clip (s)",
+        None, "Max source (s)", "Sample FPS", "Clip (s)",
         "Result FPS", "Max results", "Candidate pool",
         "Grounding", "Coverage", "Source FOV", "Cache version",
     ]
-    assert len(handle.inputs) == 3 + len(pages._EDITABLE_TEXT_FIELDS)
+    assert len(handle.inputs) == 4 + len(pages._EDITABLE_TEXT_FIELDS)
 
 
 def _in_editing_configuration(component) -> bool:
@@ -307,7 +314,7 @@ def test_editing_configuration_panel_matches_tracked_settings() -> None:
     controls = {
         component.label: component
         for component in page.blocks.values()
-        if isinstance(component, (gr.Number, gr.Slider, gr.Textbox)) and _in_editing_configuration(component)
+        if isinstance(component, (gr.Number, gr.Slider, gr.Textbox)) and component.label is not None and _in_editing_configuration(component)
     }
     expected = {
         "Episode FPS": settings.episode_fps,
@@ -336,20 +343,19 @@ def test_editing_button_wiring_matches_editable_field_order() -> None:
     page = pages.build_editing()
     handle = next(fn for fn in page.fns.values() if getattr(fn.fn, "__name__", "") == "handle")
 
-    assert [component.label for component in handle.inputs[:4]] == ["Sample video", "Instruction", None, "Seed"]
+    assert [component.label for component in handle.inputs[:4]] == ["Sample Video (Basic)", "Instruction", None, "Seed"]
     assert [component.label for component in handle.inputs[4:]] == [
-        "Episode FPS", "Episode frames",
+        None, "Episode FPS", "Episode frames",
         "Max side", "Max height", "VACE steps", "Guidance", "Mask expand",
         "Grounding", "Source FOV", "Cache version",
     ]
-    assert len(handle.inputs) == 4 + len(pages._EDITABLE_EDITING_FIELDS)
+    assert len(handle.inputs) == 5 + len(pages._EDITABLE_EDITING_FIELDS)
 
 
 def test_text_feature_explicit_3d_viewers_stay_visible_before_scene_metadata(tmp_path: Path) -> None:
     """Explicit 3D reserves an informative result panel while generation is pending."""
     selection_update = pages._selection_method_change("explicit")
-    assert selection_update["visible"] is True
-    assert "An Explicit 3D scene will appear here" in selection_update["value"]
+    assert selection_update["visible"] is False
     assert pages._selection_method_change("implicit")["visible"] is False
     editing_update = pages._editing_method_change("explicit")
     assert editing_update["visible"] is True
@@ -371,7 +377,7 @@ def test_text_feature_explicit_3d_viewers_stay_visible_before_scene_metadata(tmp
             for component in page.blocks.values()
             if isinstance(component, gr.HTML) and component.elem_id == viewer_id
         )
-        assert viewer.visible is True
+        assert viewer.visible is (viewer_id != "selection-splat-viewer")
         assert viewer.label == "3D View"
         assert viewer.show_label is True
         assert "evow-splat-viewer" in viewer.elem_classes

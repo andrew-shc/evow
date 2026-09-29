@@ -82,7 +82,12 @@ def project_primitive_mask(scene: CachedScene, primitive_mask: PrimitiveMask) ->
 
 
 def export_selected_splats(scene: CachedScene, primitive_mask: PrimitiveMask, destination: Path) -> tuple[Path, ...]:
-    """Export the complete 4D scene, coloring only text-selected primitives magenta."""
+    """Export the complete 4D scene, coloring text-selected primitives magenta.
+
+    The surrounding Gaussian environment remains visible for spatial context;
+    exactly the primitive identities projected into the paired query video are
+    highlighted at every timeline frame.
+    """
     import torch
 
     state = torch.load(scene.checkpoint, map_location="cpu", weights_only=True)
@@ -100,8 +105,6 @@ def export_selected_splats(scene: CachedScene, primitive_mask: PrimitiveMask, de
     temporal_color = state["temporal_color"].detach().cpu().numpy().astype(np.float32)
     paths = []
     for index in range(len(scene.splats)):
-        # Keep the whole reconstructed scene for context. The same mask vote
-        # used by the query recolors only its persistent primitive identities.
         colors = 1 / (1 + np.exp(-(base_color_logits + temporal_color[index])))
         colors[selected] = np.asarray((1.0, 0.0, 0.8), dtype=np.float32)
         path = destination / f"selected_{index:03d}.splat"

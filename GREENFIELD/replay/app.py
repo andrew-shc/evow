@@ -22,6 +22,11 @@ from GREENFIELD.app_core.ui import (
 )
 
 SAMPLE_VIDEO = settings.assets / "replay" / "samples" / "trees_swaying_pexels_12644693.mp4"
+REPLAY_SAMPLE_VIDEOS = (
+    ("Sample Video (Basic)", SAMPLE_VIDEO),
+    ("Sample Video 1", settings.assets / "samples" / "sp01_app01_nasa_rocket.mp4"),
+    ("Sample Video 2", settings.assets / "samples" / "sp01_app02_VIRAT.mp4"),
+)
 REPLAY_CSS = """
 .evow-section-heading h2 { font-size: 1.5rem !important; font-weight: 700 !important; line-height: 1.35 !important; }
 .evow-media { border: 2px solid #71869a !important; border-radius: 10px !important; padding: 6px !important; background: #f8fafc !important; }
@@ -149,7 +154,7 @@ def _display(state: dict):
         gr.update(value="", visible=False)
     )
     return (
-        state["source_video"], video_update,
+        state["preprocessed_input"], video_update,
         gr.update(value=models[0] if models and not is_splat else None,
                   visible=bool(models) and not is_splat),
         splat_update,
@@ -206,15 +211,15 @@ def _run(
 
 
 def _load(run_id):
-    """Restore a completed run and make its sampled episode the next input."""
+    """Restore a completed run without replacing the selected source video."""
     try:
         state = load_saved_run(run_id)
         state["message"] = (
-            "Saved run loaded. The left input now contains its recorded episode. "
-            "Change any setup control and generate a new result."
+            "Saved run loaded. Its preprocessed input and generated artifacts are shown on the right. "
+            "The selected source video remains unchanged."
         )
         display = _display(state)
-        return state["source_video"], gr.update(value=0), *display
+        return gr.update(value=0), *display
     except (OSError, ValueError, KeyError) as error:
         raise gr.Error(f"Could not load this run: {error}") from error
 
@@ -320,8 +325,8 @@ def build_app() -> gr.Blocks:
             with gr.Column(scale=1):
                 gr.Markdown("## 1. Source")
                 source, sample_button, saved, load_button = source_and_saved_controls(
-                    "Source", list_saved_runs(), "ASSETS/replay/runs/", SAMPLE_VIDEO.is_file(),
-                    "evow-replay-saved-runs", sample_path=str(SAMPLE_VIDEO),
+                    "Source", list_saved_runs(), "ASSETS/replay/runs/", REPLAY_SAMPLE_VIDEOS,
+                    "evow-replay-saved-runs",
                 )
 
                 gr.Markdown("## 2. Methodology " + help_icon("Choose an overall 3D representation family. Model-specific pipeline detail appears in Internal Execution Flow.", "Methodology"))
@@ -377,7 +382,7 @@ def build_app() -> gr.Blocks:
             with gr.Column(scale=2):
                 gr.Markdown("## 5. Output", elem_classes="evow-section-heading")
                 with gr.Row():
-                    sampled = gr.Video(label="Input", interactive=False, elem_classes="evow-media")
+                    sampled = gr.Video(label="Preprocessed Input", interactive=False, elem_classes="evow-media")
                     output = gr.Video(
                         label="Novel View from (§3)", interactive=False, elem_classes=["evow-media", "evow-output-slot"],
                         elem_id="novel-view-output", visible=True, show_download_button=True,
@@ -438,22 +443,26 @@ def build_app() -> gr.Blocks:
             fn=None, inputs=None, outputs=None, queue=False, show_progress="hidden",
             js=GENERATION_FINISH_JS,
         )
-        load_outputs = [source, start, *outputs]
+        # A saved run restores its derived artifacts, never its preprocessed
+        # episode into the source control. The current upload/sample remains
+        # the input for any subsequent reconstruction.
+        load_outputs = [start, *outputs]
         load_button.change(_load, saved, load_outputs)
         mesh_index.change(_mesh, [mesh_index, model_paths], [model, splat_viewer])
     return app
 
 
 def _allowed_paths() -> list[str]:
-    """Serve Replay and Future View artifacts, but not arbitrary asset data.
+    """Serve generated artifacts and the curated bundled samples.
 
-    Gradio's file route rejects paths outside this list. Replay worked because
-    its run directory was included, while Future View's splats were denied with
-    HTTP 403 before the browser renderer ever saw their bytes.
+    Gradio's file route rejects paths outside this list. The sample directories
+    must be explicit too: after a hard refresh the browser re-fetches a sample
+    from its source path instead of retaining Gradio's transient upload URL.
     """
     return [str(settings.run_root), str(settings.assets / "future" / "runs"),
             str(settings.assets / "selection" / "runs"), str(settings.assets / "live_camera" / "captures"),
             str(settings.assets / "editing" / "runs"), str(settings.assets / "scenes"),
+            str(settings.assets / "replay" / "samples"), str(settings.assets / "samples"),
             str(settings.root / "GREENFIELD"), str(Path(__file__).with_name("gaussian_viewer.bundle.js"))]
 
 

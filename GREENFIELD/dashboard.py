@@ -64,6 +64,14 @@ html, body { overflow-x: hidden !important; }
 .evow-clip-interval strong { display:block; color:#243b53; font-size:12px; }
 .evow-clip-interval p { margin:4px 0 0; color:#526575; font-size:11px; line-height:1.4; overflow-wrap:anywhere; }
 .evow-empty-clips { margin:0; color:#425466; font-size:12px; line-height:1.4; }
+.evow-trim-range { --trim-start:0%; --trim-end:100%; position:relative; height:34px; margin:2px 0; }
+.evow-trim-track, .evow-trim-fill { position:absolute; top:14px; height:5px; border-radius:999px; pointer-events:none; }
+.evow-trim-track { right:8px; left:8px; background:#cbd5df; }
+.evow-trim-fill { left:calc(8px + (100% - 16px) * var(--trim-start)); right:calc(8px + (100% - 16px) * (1 - var(--trim-end))); background:#0f766e; }
+.evow-trim-range input[type=range] { position:absolute; inset:0; width:100%; margin:0; appearance:none; background:transparent; pointer-events:none; }
+.evow-trim-range input[type=range]::-webkit-slider-thumb { width:16px; height:16px; appearance:none; border:2px solid #0f766e; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgb(15 23 42 / .28); pointer-events:auto; cursor:grab; }
+.evow-trim-range input[type=range]::-moz-range-thumb { width:13px; height:13px; border:2px solid #0f766e; border-radius:50%; background:#fff; pointer-events:auto; cursor:grab; }
+.evow-trim-range output { position:absolute; top:25px; left:0; color:#526575; font-size:10px; font-variant-numeric:tabular-nums; }
 .evow-media > div { border: 0 !important; }
 .evow-media { min-width: 0 !important; }
 .evow-media video, .evow-media img, .evow-media canvas, .evow-media iframe { display: block !important; width: 100% !important; max-width: 100% !important; height: auto !important; object-fit: contain !important; }
@@ -270,6 +278,13 @@ html, body { overflow-x: hidden !important; }
   .evow-config-panel .evow-config-label,
   .evow-config-panel .evow-config-control { min-width: 0 !important; }
 }
+/* A sample selection can take time to reach the browser, especially for the
+   longer bundled videos. Preserve the old frame as a muted, grey thumbnail and
+   show an overlay until the replacement video fires a playable media event. */
+.evow-source-video { position: relative !important; }
+.evow-source-video.evow-source-loading video { filter: grayscale(1) opacity(.45) !important; }
+.evow-source-video.evow-source-loading::before { content: ""; position: absolute; z-index: 12; top: 50%; left: 50%; width: 26px; height: 26px; margin: -30px 0 0 -13px; border: 3px solid #9fb1c0; border-top-color: #102a43; border-radius: 50%; animation: evow-generation-spin .8s linear infinite; }
+.evow-source-video.evow-source-loading::after { content: "Loading video…"; position: absolute; z-index: 12; top: calc(50% + 8px); left: 0; right: 0; color: #102a43; font-size: 13px; font-weight: 650; text-align: center; text-shadow: 0 1px #fff; pointer-events: none; }
 """
 
 # Child-page CSS is omitted by Gradio's ``render()``, so retain the shared
@@ -339,6 +354,52 @@ FLOW_HEADER_JS = """
   });
   document.addEventListener("click", (event) => { if (!helpPopover.contains(event.target) && !event.target.closest(".evow-help")) hideHelp(); });
   bindHelp();
+  // Videos are demonstrations, not an audio channel. Set both properties so
+  // newly rendered Gradio <video> elements cannot resume audio after a refresh.
+  const muteDashboardVideos = () => document.querySelectorAll("video").forEach((video) => {
+    video.muted = true;
+    video.defaultMuted = true;
+    video.volume = 0;
+    video.setAttribute("muted", "");
+  });
+  const finishSourceLoading = (event) => {
+    const source = event.target.closest?.(".evow-source-video");
+    if (!source) return;
+    source.classList.remove("evow-source-loading");
+    source.removeAttribute("aria-busy");
+  };
+  document.addEventListener("loadeddata", finishSourceLoading, true);
+  document.addEventListener("canplay", finishSourceLoading, true);
+  muteDashboardVideos();
+  // Gradio 5.50 has no range-slider component. These paired native inputs act
+  // as one accessible control and mirror a stable "start,end" value into the
+  // hidden Gradio Textbox that the Python handler validates.
+  const syncTrimRange = (range, changed) => {
+    const inputs = range.querySelectorAll("input[type=range]");
+    if (inputs.length !== 2) return;
+    let start = Number(inputs[0].value), end = Number(inputs[1].value);
+    if (changed === inputs[0] && start > end) end = start;
+    if (changed === inputs[1] && end < start) start = end;
+    inputs[0].value = String(start); inputs[1].value = String(end);
+    const maximum = Math.max(Number(inputs[0].max) || 1, 1);
+    range.style.setProperty("--trim-start", String(start / maximum));
+    range.style.setProperty("--trim-end", String(end / maximum));
+    const output = range.querySelector("output");
+    if (output) output.textContent = `${start.toFixed(1)}s – ${end.toFixed(1)}s`;
+    if (!changed) return;
+    const hidden = document.getElementById(range.dataset.evowTrimTarget || "")?.querySelector("textarea, input");
+    if (!hidden) return;
+    hidden.value = `${start},${end}`;
+    hidden.dispatchEvent(new Event("input", { bubbles:true }));
+    hidden.dispatchEvent(new Event("change", { bubbles:true }));
+  };
+  const bindTrimRanges = () => document.querySelectorAll(".evow-trim-range").forEach((range) => {
+    if (range.dataset.evowTrimBound) return;
+    range.dataset.evowTrimBound = "true";
+    syncTrimRange(range, null);
+    range.querySelectorAll("input[type=range]").forEach((input) => input.addEventListener("input", () => syncTrimRange(range, input)));
+  });
+  bindTrimRanges();
   // Child page JavaScript is dropped by Blocks.render(), so this root-level
   // binder makes just the unavailable Radio choice inert after every render.
   const disableAnimatedMeshChoice = () => document.querySelectorAll("#replay-method-choice label").forEach((choice) => {
@@ -413,7 +474,7 @@ FLOW_HEADER_JS = """
   // ``characterData`` matters: Gradio may set ``.md.prose``'s text after the
   // field shell exists, and only a text-node mutation re-triggers the tooltip
   // binder for those rows (the field stays unmarked until it has real text).
-  new MutationObserver(() => { bindHelp(); setSavedRunPlaceholders(); applyConfigFieldTooltips(); }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  new MutationObserver(() => { bindHelp(); setSavedRunPlaceholders(); applyConfigFieldTooltips(); muteDashboardVideos(); bindTrimRanges(); }).observe(document.body, { childList: true, subtree: true, characterData: true });
 
 }
 """

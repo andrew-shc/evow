@@ -44,7 +44,11 @@ def _snapshot(
         "message": message,
         "trace": trace.record,
         "previews": previews,
-        "source_video": str(run_dir / "source.mp4") if (run_dir / "source.mp4").is_file() else None,
+        # This is the sampled, resized episode persisted for reconstruction, not
+        # the source chosen in the dashboard. Keeping that distinction in the
+        # snapshot prevents UI consumers from ever treating this derived clip as
+        # a replacement for the user-owned source recording.
+        "preprocessed_input": str(run_dir / "source.mp4") if (run_dir / "source.mp4").is_file() else None,
         "video": str(video) if video else None,
         "models": [str(path) for path in (models or [])],
     }
