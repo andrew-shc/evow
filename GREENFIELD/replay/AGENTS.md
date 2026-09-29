@@ -8,10 +8,11 @@ This directory owns the first application feature: replay a short monocular vide
 - run.py coordinates input preparation, a selected backend, and replayable traces.
 - clip.py extracts the same short episode for both backends. The application records the stationary-view assumption but does not validate camera motion.
 - pose.py defines the shared virtual camera request.
+- overrides.py is the per-run override boundary: `ReplayOverrides` validates and applies every exposed knob, `settings_json` feeds the isolated workers, and `reconstruction_fingerprint` keys explicit scene caches. Keep its field names identical to `Settings` field names so `dataclasses.replace` and worker JSON stay in lockstep.
 - implicit.py and anyview_worker.py adapt the external AnyView model.
 - explicit.py, depth_worker.py, depth_prior.py, gaussian_worker.py, and splat.py initialize and fit a native 4D Gaussian scene. splat_viewer.py embeds an orbitable Three.js viewer; gaussian_viewer.bundle.js is the locally bundled upstream viewer library.
 - splat_viewer.py fully preloads every supplied .splat frame before enabling its controls. It partitions the timeline into 32-scene static renderer groups, swaps only the active group, and preserves the orbit camera at group boundaries; do not reconnect it to a Gradio change handler, because that rebuilds the iframe and interrupts animation.
-- workflow.py turns each recorded run trace into a script-free, expandable execution flow. Each stage summary opens once into a program contract and live run record, including source file, function chain, data contract, linked left-side control, preview, metrics, request settings, and raw event JSON. Do not reintroduce an iframe or JavaScript here: Gradio streams this component during execution.
+- workflow.py turns each V2 run trace into a script-free, expandable execution flow. Every row maps to one stable `stage_id`; worker subprocesses publish ordered events through an atomic JSON sidecar, and every serial stage must emit a terminal state before the next starts. The expanded card exposes source excerpt, data contract, previews, bounded worker-log tail, and raw event JSON. Old traces stay raw legacy evidence rather than receiving fabricated atomic states. A `skipped` status renders as "Skipped" with no duration. Do not reintroduce an iframe or JavaScript here: Gradio streams this component during execution.
 - trace.py and settings.py hold the shared run record and paths.
 
 ## Gotchas

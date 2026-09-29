@@ -22,8 +22,24 @@ runtime:
   future_forecast_splat_timeline_fps: 6
   # Smaller temporal windows cap SVD activation memory on a 24 GB GPU.
   future_svd_chunk_frames: 14
+  # Per-chunk VAE decode batch for the SVD rollout. 1 matches the historical
+  # fixed value and keeps decode activation memory smallest.
+  future_svd_decode_chunk_size: 1
   future_motion_fit_frames: 12
   future_max_side: 1024
+  # Explicit-3D virtual camera pose and the assumed source camera field of view.
+  # These defaults reproduce the previously hardcoded worker arguments.
+  future_render_yaw: 0.0
+  future_render_shift: 0.0
+  future_render_fov: 70.0
+  future_source_fov_degrees: 70.0
+  # Source-specific Future View adaptation remains bounded on the owner GPU.
+  # The final observed history is always held out for the forecast.
+  # This affects adaptation only; forecast generation keeps its configured resolution.
+  future_training_max_side: 512
+  future_training_max_pairs: 64
+  future_training_lora_steps: 500
+  future_training_lora_rank: 8
   max_input_frames: 90
   future_max_seconds: 3
   deterministic_seed: 0
@@ -35,14 +51,26 @@ runtime:
   query_result_fps: 12
   query_max_results: 5
   query_explicit_candidate_pool: 8
+  # Grounding DINO's box/text confidence threshold and the projected-mask
+  # coverage at or above which a query region is flagged low-spatial-specificity.
+  # Both were previously hardcoded (0.25 and 0.65); keeping them declarative lets
+  # the Text Query page expose them without changing the default behavior.
+  text_grounding_threshold: 0.25
+  text_low_specificity_coverage: 0.65
   # Text Manipulation runs one replay-sized episode. Wan VACE supports 81
   # frames and provides substantially stronger temporal consistency.
   text_episode_fps: 12
   text_episode_max_frames: 81
   text_source_fov_degrees: 70
   # Bump when Gaussian worker reconstruction semantics change so old scenes are never reused.
-  text_scene_cache_version: dynamic-gaussian-v1
+  # v2 additionally folds every reconstruction knob (stride/steps/losses/rates/background) into the key.
+  text_scene_cache_version: dynamic-gaussian-v2
   text_edit_max_side: 832
   # Keep the VACE workload inside the RTX 3090 Ti envelope while retaining source aspect ratio.
   text_edit_max_height: 480
   text_vace_steps: 30
+  # Wan VACE classifier-free guidance. 5.0 matches the previously hardcoded value.
+  text_vace_guidance_scale: 5.0
+  # Dilate the resolved edit mask by this many pixels so VACE blends generated
+  # boundaries instead of cutting a hard seam. 5 matches the old default.
+  text_edit_mask_expand_px: 5

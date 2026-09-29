@@ -8,3 +8,24 @@ model:
   depth_input_size: 392
   gaussian_stride: 6
   gaussian_steps: 260
+  # Gaussian optimizer rates, split per parameter group. Defaults match the
+  # values that used to be hardcoded in gaussian_worker.py.
+  gaussian_lr_xyz: 0.003
+  gaussian_lr_rotation: 0.003
+  gaussian_lr_scale: 0.003
+  gaussian_lr_color: 0.015
+  gaussian_lr_opacity: 0.01
+  # Deformation/motion rate, split out of the historical hardcoded 0.002 so the
+  # UI can tune how fast the per-frame Gaussian offsets move.
+  gaussian_lr_motion: 0.002
+  # Depth and temporal-smoothness penalty weights added to the image loss.
+  gaussian_loss_depth: 0.002
+  gaussian_loss_smoothness: 0.01
+  # Initial opacity logit for every seeded Gaussian (sigmoid(2.2) ≈ 0.9).
+  gaussian_init_opacity_logit: 2.2
+  # RGB raster background used for every gsplat render (sky-ish neutral).
+  gaussian_background_r: 0.5
+  gaussian_background_g: 0.68
+  gaussian_background_b: 0.86
+  # AnyView classifier-free guidance scale. 0.0 preserves the historical run.
+  anyview_guidance_scale: 0.0

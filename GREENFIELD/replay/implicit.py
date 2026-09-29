@@ -1,4 +1,4 @@
-"""Prepare an AnyView episode and run its video diffusion model in isolation."""
+"""Prepare an AnyView episode and forward its isolated atomic stages."""
 
 import json
 from pathlib import Path
@@ -9,8 +9,21 @@ import time
 
 import numpy as np
 
+from .overrides import settings_json
 from .pose import ViewRequest, intrinsics, target_cam_to_world
 from .settings import Settings
+from .worker_events import read_events
+
+
+def anyview_command(episode: Path, output_dir: Path, settings: Settings, events_path: Path | None = None) -> list[str]:
+    """Build the isolated AnyView worker call and give it an event sidecar."""
+    command = [
+        sys.executable, "-m", "GREENFIELD.replay.anyview_worker",
+        "--episode", str(episode), "--out", str(output_dir), "--settings-json", settings_json(settings),
+    ]
+    if events_path is not None:
+        command.extend(("--events", str(events_path)))
+    return command
 
 
 def prepare_episode(
@@ -20,6 +33,7 @@ def prepare_episode(
     run_dir: Path,
     settings: Settings,
 ) -> Path:
+    """Write the local AnyView-compatible RGB and camera episode."""
     episode = run_dir / "anyview_episode"
     (episode / "rgb").mkdir(parents=True)
     (episode / "lowdim").mkdir()
@@ -33,28 +47,64 @@ def prepare_episode(
     for camera, poses, intrinsics_for_camera in (("cam1", source_poses, source_intrinsics), ("cam0", target_poses, target_intrinsics)):
         np.savez_compressed(
             episode / "lowdim" / f"{camera}.npz",
-            camera=np.repeat(camera, count),
-            timestep=np.arange(count, dtype=np.int64),
-            intrinsics=intrinsics_for_camera,
-            extrinsics=poses,
+            camera=np.repeat(camera, count), timestep=np.arange(count, dtype=np.int64),
+            intrinsics=intrinsics_for_camera, extrinsics=poses,
         )
-
     metadata = {
-        "info": {"name": "evow", "storage": "videos"},
-        "cameras": ["cam0", "cam1"],
-        "resolution": [height, width],
-        "num_frames": count,
-        "framerate": settings.fps,
-        "rgb": {"extension": "mp4"},
-        "extrinsics": {"transform": "cam2world"},
-        "specific": {
-            "roles": {"input": "cam1", "target": "cam0"},
-            # AnyView trains with translation channels scaled by scene family.
-            "scale_factor": 0.125,
-        },
+        "info": {"name": "evow", "storage": "videos"}, "cameras": ["cam0", "cam1"],
+        "resolution": [height, width], "num_frames": count, "framerate": settings.fps,
+        "rgb": {"extension": "mp4"}, "extrinsics": {"transform": "cam2world"},
+        "specific": {"roles": {"input": "cam1", "target": "cam0"}, "scale_factor": 0.125},
     }
     (episode / "metadata.json").write_text(json.dumps(metadata, indent=2))
     return episode
+
+
+def _log_tail(path: Path, lines: int = 16) -> str:
+    if not path.is_file():
+        return ""
+    return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
+
+
+def _worker(command: list[str], log_path: Path, events_path: Path):
+    """Forward every event in an atomically published AnyView sidecar."""
+    with log_path.open("w") as log_file:
+        process = subprocess.Popen(command, cwd=Path.cwd(), stdout=log_file, stderr=subprocess.STDOUT)
+        last_sequence = 0
+        yield {
+            "stage_id": "load_anyview_vae", "status": "running",
+            "detail": "Starting AnyView worker.", "log_path": log_path,
+        }
+        while True:
+            for event in read_events(events_path, last_sequence):
+                last_sequence = max(last_sequence, int(event["sequence"]))
+                metrics = dict(event.get("metrics") or {})
+                tail = _log_tail(log_path)
+                if tail:
+                    metrics["log_tail"] = tail
+                yield {
+                    "stage_id": event["stage_id"], "status": event["status"],
+                    "detail": event["detail"], "metrics": metrics,
+                    "preview": Path(event["preview"]) if event.get("preview") else None,
+                    "execution": event.get("execution", "serial"), "log_path": log_path,
+                }
+            if process.poll() is not None:
+                break
+            time.sleep(0.05)
+    for event in read_events(events_path, last_sequence):
+        last_sequence = max(last_sequence, int(event["sequence"]))
+        metrics = dict(event.get("metrics") or {})
+        tail = _log_tail(log_path)
+        if tail:
+            metrics["log_tail"] = tail
+        yield {
+            "stage_id": event["stage_id"], "status": event["status"],
+            "detail": event["detail"], "metrics": metrics,
+            "preview": Path(event["preview"]) if event.get("preview") else None,
+            "execution": event.get("execution", "serial"), "log_path": log_path,
+        }
+    if process.returncode:
+        raise RuntimeError(f"AnyView failed. Log: {log_path}\n{_log_tail(log_path)}")
 
 
 def run_implicit(
@@ -64,63 +114,34 @@ def run_implicit(
     run_dir: Path,
     settings: Settings,
 ):
-    required = (
-        settings.anyview_checkpoint,
-        settings.anyview_tokenizer,
-        settings.anyview_text_embedding,
-    )
+    """Yield the real serial AnyView operations in their execution order."""
+    required = (settings.anyview_checkpoint, settings.anyview_tokenizer, settings.anyview_text_embedding)
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise FileNotFoundError("Missing AnyView weights: " + ", ".join(missing))
     if not (settings.anyview_repo / "scripts" / "infer.py").is_file():
         raise FileNotFoundError("AnyView-DVS checkout is missing.")
 
-    # Persist the active state before filesystem work so the dashboard never
-    # presents a completed camera setup while its episode is still being built.
     yield {
-        "stage": "Camera setup", "status": "running",
-        "detail": "Packaging the fixed source camera and requested virtual camera.",
+        "stage_id": "package_anyview_episode", "status": "running",
+        "detail": "Packaging source RGB and virtual cameras.",
     }
     episode = prepare_episode(frames, request, source_fov_degrees, run_dir, settings)
     yield {
-        "stage": "Camera setup", "status": "complete",
-        "detail": "Saved the fixed source camera and requested virtual camera.",
-        "preview": run_dir / "source.png",
+        "stage_id": "package_anyview_episode", "status": "complete",
+        "detail": "Saved AnyView episode.", "preview": run_dir / "source.png",
+        "metrics": {"frames": len(frames)},
     }
+
     output_dir = run_dir / "implicit"
     output_dir.mkdir()
-    log_path = run_dir / "anyview.log"
-    command = [
-        sys.executable, "-m", "GREENFIELD.replay.anyview_worker",
-        "--episode", str(episode), "--out", str(output_dir),
-    ]
-    with log_path.open("w") as log_file:
-        process = subprocess.Popen(
-            command, cwd=settings.root, stdout=log_file, stderr=subprocess.STDOUT,
-        )
-        started = time.monotonic()
-        yield {
-            "stage": "Video diffusion", "status": "running",
-            "detail": "AnyView is generating the synchronized target-view clip.",
-        }
-        while process.poll() is None:
-            time.sleep(0.05)
-            yield {
-                "stage": "Video diffusion", "status": "running",
-                "detail": f"Generating target view · {time.monotonic() - started:.2f}s elapsed",
-            }
-    if process.returncode:
-        tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-12:])
-        raise RuntimeError(f"AnyView failed. Log: {log_path}\n{tail}")
-
+    events_path = output_dir / "worker_events.json"
+    yield from _worker(
+        anyview_command(episode, output_dir, settings, events_path),
+        run_dir / "anyview.log", events_path,
+    )
     video = output_dir / "pred.mp4"
     first_frame = output_dir / "frames" / "000000.png"
     if not video.is_file() or not first_frame.is_file():
-        raise RuntimeError(f"AnyView produced no playable result. See {log_path}")
-    yield {
-        "stage": "Generated view", "status": "complete",
-        "detail": "The target-view video is ready.",
-        "preview": first_frame,
-        "metrics": {"frames": len(frames), "elapsed_seconds": round(time.monotonic() - started, 1)},
-    }
-    return {"video": video, "models": [], "previews": [run_dir / "source.png", first_frame]}
+        raise RuntimeError(f"AnyView produced no playable result. See {run_dir / 'anyview.log'}")
+    return {"video": video, "models": []}

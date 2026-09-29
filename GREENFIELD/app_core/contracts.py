@@ -5,12 +5,20 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-StageStatus = Literal["waiting", "running", "complete", "error"]
+StageStatus = Literal["waiting", "running", "complete", "error", "skipped"]
 
 
 @dataclass(frozen=True)
 class StageSpec:
-    """Stable execution-stage metadata rendered with Replay's program contract."""
+    """Stable execution-stage metadata rendered with Replay's program contract.
+
+    ``name`` is the human-facing label drawn on the stage card. ``stage_id`` is
+    the stable identity persisted on events and referenced by a feature flow's
+    parent groups; when it is empty it falls back to ``name`` (via
+    ``app_core.flow.normalize_stage_id``), which keeps legacy features that
+    declared only names working unchanged. It stays last so positional
+    construction that predates stage IDs keeps working.
+    """
 
     name: str
     purpose: str
@@ -23,6 +31,9 @@ class StageSpec:
     # Static model provenance is kept with the stage contract so the UI never
     # guesses which implementation produced a live execution tick.
     model_refs: tuple["ModelReference", ...] = ()
+    # Stable persisted identity, independent of the display label. Empty means
+    # "use ``name``"; see ``app_core.flow.normalize_stage_id``.
+    stage_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -37,13 +48,21 @@ class ModelReference:
 
 @dataclass(frozen=True)
 class StageEvent:
-    """A serializable update emitted by an adapter while a run is executing."""
+    """A serializable update emitted by an adapter while a run is executing.
+
+    ``stage`` is the human-facing label. ``stage_id`` is the stable identity the
+    trace persists for that label; adapters may leave it empty to fall back to
+    ``stage`` (via ``app_core.flow.normalize_stage_id``). It stays last so
+    existing positional construction keeps working.
+    """
 
     stage: str
     status: StageStatus
     detail: str
     preview: Path | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
+    # Stable persisted identity; empty means "use ``stage``".
+    stage_id: str = ""
 
 
 @dataclass(frozen=True)

@@ -1,92 +1,65 @@
-"""Unit coverage for replay Accordion headers in the execution flow."""
+"""Regression coverage for Replay's atomic execution-flow presentation."""
 
-import unittest
-
-from GREENFIELD.replay.workflow import workflow_card_html, workflow_header
+from GREENFIELD.replay.workflow import MAX_FLOW_STAGES, workflow_card_html, workflow_header, workflow_visible
 
 
-class WorkflowHeaderTest(unittest.TestCase):
-    """Verify trace state is faithfully reflected in each Accordion header."""
-
-    def test_waiting_stage_has_neutral_status_and_no_duration(self) -> None:
-        label, state_class = workflow_header({"mode": "explicit", "events": []}, 0)
-
-        self.assertEqual(state_class, "evow-stage-waiting")
-        self.assertTrue(label.startswith("1. Choose source · "))
-        self.assertNotIn("●", label)
-        self.assertNotIn("○", label)
-        self.assertNotIn("!", label)
-        self.assertIn("Waiting", label)
-        self.assertIn("—", label)
+def _trace(mode="explicit", events=None):
+    return {"workflow_version": 2, "mode": mode, "run_id": "missing", "events": events or []}
 
 
-    def test_later_event_does_not_complete_an_unstarted_stage(self) -> None:
-        """Workflow presentation must not infer completion from event ordering."""
-        label, state_class = workflow_header({
-            "mode": "explicit",
-            "events": [{"stage": "4D Gaussian fitting", "status": "running", "elapsed_seconds": 7}],
-        }, 2)
-
-        self.assertEqual(state_class, "evow-stage-waiting")
-        self.assertIn("Waiting", label)
-
-    def test_running_stage_shows_blue_status_and_elapsed_duration(self) -> None:
-        label, state_class = workflow_header({
-            "mode": "explicit",
-            "events": [
-                {"stage": "Video depth prior", "status": "running", "elapsed_seconds": 2},
-                {"stage": "3D initialization", "status": "running", "elapsed_seconds": 7},
-            ],
-        }, 2)
-
-        self.assertEqual(state_class, "evow-stage-running")
-        self.assertIn("Running", label)
-        self.assertIn("5.00s", label)
-
-    def test_completed_stage_shows_green_status_and_final_duration(self) -> None:
-        label, state_class = workflow_header({
-            "mode": "explicit",
-            "events": [
-                {"stage": "Gaussian initialization", "status": "running", "elapsed_seconds": 3},
-                {"stage": "3D initialization", "status": "complete", "elapsed_seconds": 8},
-            ],
-        }, 3)
-
-        self.assertEqual(state_class, "evow-stage-complete")
-        self.assertIn("Completed", label)
-        self.assertIn("5.00s", label)
-
-    def test_failed_stage_uses_failed_label_for_error_trace_event(self) -> None:
-        label, state_class = workflow_header({
-            "mode": "explicit",
-            "events": [{"stage": "Input clip", "status": "error", "elapsed_seconds": 4}],
-        }, 0)
-
-        self.assertEqual(state_class, "evow-stage-failed")
-        self.assertIn("Failed", label)
-        self.assertIn("0.00s", label)
-
-    def test_expanded_card_omits_the_outer_header_metadata(self) -> None:
-        html = workflow_card_html({"mode": "explicit", "events": []}, 0)
-
-        self.assertNotIn("evow-stage-summary", html)
-        self.assertNotIn("evow-stage-number", html)
-        self.assertNotIn("evow-stage-duration", html)
-
-    def test_saved_completed_trace_keeps_its_recorded_duration(self) -> None:
-        label, state_class = workflow_header({
-            "mode": "implicit",
-            "events": [
-                {"stage": "Camera setup", "status": "running", "elapsed_seconds": 3},
-                {"stage": "Camera setup", "status": "complete", "elapsed_seconds": 9},
-                {"stage": "Run complete", "status": "complete", "elapsed_seconds": 10},
-            ],
-        }, 2)
-
-        self.assertEqual(state_class, "evow-stage-complete")
-        self.assertIn("Completed", label)
-        self.assertIn("6.00s", label)
+def _event(stage_id, status, elapsed=1.0, **extra):
+    return {"stage_id": stage_id, "stage": stage_id, "status": status, "elapsed_seconds": elapsed, "stage_elapsed_seconds": elapsed, **extra}
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_atomic_rows_start_waiting_and_preallocated_tail_is_hidden():
+    trace = _trace()
+    label, state = workflow_header(trace, 0)
+    assert label.startswith("1. Validate request · Waiting")
+    assert state == "evow-stage-waiting"
+    assert workflow_visible(trace, 0)
+    assert not workflow_visible(trace, MAX_FLOW_STAGES - 1)
+
+
+def test_one_stage_event_never_changes_another_atomic_row():
+    trace = _trace(events=[_event("fit_4d_scene", "running", 4.0)])
+    sample_label, sample_state = workflow_header(trace, 1)
+    fit_label, fit_state = workflow_header(trace, 8)
+    assert "Sample episode · Waiting" in sample_label
+    assert sample_state == "evow-stage-waiting"
+    assert "Fit 4D scene · Running" in fit_label
+    assert fit_state == "evow-stage-running"
+
+
+def test_terminal_event_immediately_replaces_running_status():
+    trace = _trace(events=[
+        _event("fit_4d_scene", "running", 2.0),
+        _event("fit_4d_scene", "complete", 8.0),
+    ])
+    label, state = workflow_header(trace, 8)
+    assert "Completed" in label
+    assert "8.000s" in label
+    assert state == "evow-stage-complete"
+
+
+def test_concurrent_label_requires_explicit_concurrent_execution_mode():
+    trace = _trace(events=[_event("fit_4d_scene", "running", execution="concurrent")])
+    label, _state = workflow_header(trace, 8)
+    assert "Running (concurrent/async)" in label
+
+
+def test_legacy_trace_stays_raw_instead_of_fabricating_atomic_states():
+    trace = {"mode": "explicit", "events": [{"stage": "4D Gaussian fitting", "status": "running"}]}
+    label, state = workflow_header(trace, 0)
+    assert "Legacy trace" in label
+    assert state == "evow-stage-waiting"
+    assert "4D Gaussian fitting" in workflow_card_html(trace, 0)
+    assert not workflow_visible(trace, 1)
+
+
+def test_expanded_atomic_card_exposes_code_and_raw_event_evidence():
+    trace = _trace(events=[_event("sample_episode", "complete", 3.0, metrics={"frames": 13})])
+    card = workflow_card_html(trace, 1)
+    assert "GREENFIELD/replay/clip.py" in card
+    assert "raw event JSON" in card
+    assert "&quot;stage_id&quot;: &quot;sample_episode&quot;" in card
+    assert "frames" in card

@@ -12,9 +12,10 @@ from gsplat.rendering import rasterization
 
 from .clip import write_video
 from .depth_prior import scene_depths
+from .overrides import apply_settings_json
 from .pose import ViewRequest, intrinsics, target_cam_to_world
-from .settings import load_settings
 from .splat import save_splat, timeline_keyframe_indices
+from .worker_events import WorkerEventWriter
 
 
 def _initial_gaussians(frames: np.ndarray, depths: np.ndarray, fov: float, stride: int):
@@ -47,16 +48,17 @@ def _initial_gaussians(frames: np.ndarray, depths: np.ndarray, fov: float, strid
     return centers.astype(np.float32), scales.astype(np.float32), base_color, flow_offsets, color_offsets
 
 
-def _render(means, quats, scales, opacities, colors, viewmat, camera, width, height):
+def _render(means, quats, scales, opacities, colors, viewmat, camera, width, height, background):
     rgb, alpha, _ = rasterization(
         means, quats, scales, opacities, colors,
         viewmat[None], camera[None], width, height,
-        packed=False, backgrounds=torch.tensor([[0.5, 0.68, 0.86]], device=means.device),
+        packed=False, backgrounds=background,
     )
     return rgb[0], alpha[0]
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Expose the worker's CLI so tests can assert the default (no --settings-json) path."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--frames", type=Path, required=True)
     parser.add_argument("--depths", type=Path, required=True)
@@ -74,11 +76,21 @@ def main() -> None:
     parser.add_argument("--splat-keyframe-fps", type=float, default=0)
     parser.add_argument("--observed-splat-keyframe-fps", type=float, default=0)
     parser.add_argument("--forecast-splat-keyframe-fps", type=float, default=0)
-    args = parser.parse_args()
+    # Optional JSON dict of exposed reconstruction overrides. Absent means the
+    # tracked CONFIGS/replay.yaml defaults, preserving direct CLI invocation.
+    parser.add_argument("--settings-json", default=None)
+    parser.add_argument("--events", type=Path, default=None)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    events = WorkerEventWriter(args.events)
     observed_splat_fps = args.observed_splat_keyframe_fps or args.splat_keyframe_fps
     forecast_splat_fps = args.forecast_splat_keyframe_fps or args.splat_keyframe_fps
-    settings = load_settings()
+    settings = apply_settings_json(args.settings_json)
     request = ViewRequest(args.render_yaw, args.render_shift, args.render_fov)
+    events.emit("load_gaussian_inputs", "running", "Loading frames, depth prior, and camera tensors.")
     frames = np.load(args.frames)
     with np.load(args.depths) as data:
         depths = scene_depths(data["depths"])
@@ -86,6 +98,8 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda")
     torch.manual_seed(0)
+    events.emit("load_gaussian_inputs", "complete", "Frames and depth prior are ready.", metrics={"frames": count})
+    events.emit("initialize_gaussians", "running", "Seeding Gaussian primitives from depth and optical flow.")
     centers, scales, colors, offsets, color_offsets = _initial_gaussians(
         frames, depths, args.source_fov, settings.gaussian_stride,
     )
@@ -93,7 +107,7 @@ def main() -> None:
     xyz = torch.nn.Parameter(torch.tensor(centers, device=device, dtype=torch.float32))
     log_scales = torch.nn.Parameter(torch.tensor(np.log(scales), device=device, dtype=torch.float32))
     color_logits = torch.nn.Parameter(torch.logit(torch.tensor(colors, device=device).clamp(0.01, 0.99)))
-    opacity_logits = torch.nn.Parameter(torch.full((len(centers),), 2.2, device=device))
+    opacity_logits = torch.nn.Parameter(torch.full((len(centers),), settings.gaussian_init_opacity_logit, device=device))
     # The same primitive identifiers persist across time; these are per-frame deformations.
     motion = torch.nn.Parameter(torch.tensor(offsets, device=device, dtype=torch.float32))
     temporal_color = torch.nn.Parameter(torch.tensor(color_offsets, device=device))
@@ -104,12 +118,20 @@ def main() -> None:
     source_view = torch.eye(4, device=device)
     targets = torch.tensor(frames, device=device, dtype=torch.float32) / 255.0
     initial_depth = xyz[:, 2].detach().clone()
+    background = torch.tensor(
+        [[settings.gaussian_background_r, settings.gaussian_background_g, settings.gaussian_background_b]],
+        device=device,
+    )
+    events.emit("initialize_gaussians", "complete", "Initialized Gaussian primitives.", metrics={"gaussians": len(centers)})
+    # Parameter groups mirror the historical optimizer exactly. xyz and rotation
+    # used to share one group; separating them only lets the UI tune each rate.
     optimizer = torch.optim.Adam([
-        {"params": [xyz, quats], "lr": 0.003},
-        {"params": [log_scales], "lr": 0.003},
-        {"params": [color_logits, temporal_color], "lr": 0.015},
-        {"params": [opacity_logits], "lr": 0.01},
-        {"params": [motion], "lr": 0.002},
+        {"params": [xyz], "lr": settings.gaussian_lr_xyz},
+        {"params": [quats], "lr": settings.gaussian_lr_rotation},
+        {"params": [log_scales], "lr": settings.gaussian_lr_scale},
+        {"params": [color_logits, temporal_color], "lr": settings.gaussian_lr_color},
+        {"params": [opacity_logits], "lr": settings.gaussian_lr_opacity},
+        {"params": [motion], "lr": settings.gaussian_lr_motion},
     ])
     progress_path = args.out / "progress.json"
 
@@ -119,6 +141,7 @@ def main() -> None:
         temporary.write_text(json.dumps(record))
         temporary.replace(progress_path)
 
+    events.emit("fit_4d_scene", "running", "Optimizing the persistent 4D Gaussian scene.", metrics={"total": settings.gaussian_steps, "gaussians": len(centers)})
     for step in range(settings.gaussian_steps):
         frame_index = step % count
         optimizer.zero_grad(set_to_none=True)
@@ -126,14 +149,14 @@ def main() -> None:
         rgb, _ = _render(
             means, quats, log_scales.exp(), opacity_logits.sigmoid(),
             (color_logits + temporal_color[frame_index]).sigmoid(),
-            source_view, camera, width, height,
+            source_view, camera, width, height, background,
         )
         reconstruction = (rgb - targets[frame_index]).abs().mean()
         # A static camera leaves depth and hidden geometry ambiguous. Keep the learned
         # scene near its prior and make deformation smooth across consecutive frames.
         depth_penalty = (xyz[:, 2] - initial_depth).abs().mean()
         smoothness = (motion[1:] - motion[:-1]).square().mean()
-        loss = reconstruction + 0.002 * depth_penalty + 0.01 * smoothness
+        loss = reconstruction + settings.gaussian_loss_depth * depth_penalty + settings.gaussian_loss_smoothness * smoothness
         loss.backward()
         optimizer.step()
         record = {"phase": "fit_gaussians", "step": step + 1, "total": settings.gaussian_steps,
@@ -144,17 +167,48 @@ def main() -> None:
             imageio.imwrite(preview, (rgb.detach().cpu().numpy().clip(0, 1) * 255).astype(np.uint8))
             record["preview"] = str(preview)
         write_progress(record)
+        if step == 0 or (step + 1) % 25 == 0 or step + 1 == settings.gaussian_steps:
+            events.emit("fit_4d_scene", "running", "Optimizing the persistent 4D Gaussian scene.", metrics={"step": step + 1, "total": settings.gaussian_steps, "image_loss": record["loss"], "gaussians": len(centers)}, preview=preview if "preview" in record else None)
         print(f"step {step + 1}/{settings.gaussian_steps} loss={loss.item():.5f}", flush=True)
+    events.emit("fit_4d_scene", "complete", "4D Gaussian optimization finished.", metrics={"steps": settings.gaussian_steps, "gaussians": len(centers)})
 
     target_pose = torch.tensor(target_cam_to_world(request), device=device)
     target_view = torch.linalg.inv(target_pose)
-    all_renders = []
     render_camera = torch.tensor(intrinsics(height, width, args.render_fov), device=device)
     observed_indices = (
         timeline_keyframe_indices(count, args.history_fps, observed_splat_fps)
         if observed_splat_fps else tuple(range(count))
     )
     observed_index_set = set(observed_indices)
+
+    # Estimate the constant-velocity motion prior before rendering. The forecast
+    # views need it, and doing it first lets a single render/export stage honestly
+    # cover the whole observed-to-future timeline as one serial row.
+    velocity = None
+    forecast_indices: tuple[int, ...] = ()
+    if args.forecast_frames:
+        fit = min(args.motion_fit_frames, count)
+        events.emit("motion_extrapolate", "running",
+                    "Fitting a constant-velocity motion prior to recent deformation.",
+                    metrics={"fit_frames": fit, "forecast_frames": args.forecast_frames})
+        times = torch.arange(fit, device=device, dtype=torch.float32)
+        centered = times - times.mean()
+        velocity = (centered[:, None, None] * (motion[-fit:] - motion[-fit:].mean(dim=0))).sum(dim=0) / centered.square().sum().clamp_min(1e-6)
+        forecast_indices = (
+            timeline_keyframe_indices(args.forecast_frames, args.forecast_fps, forecast_splat_fps)
+            if forecast_splat_fps else tuple(range(args.forecast_frames))
+        )
+        events.emit("motion_extrapolate", "complete",
+                    "Extrapolated the learned deformation into the future window.",
+                    metrics={"fit_frames": fit, "forecast_frames": args.forecast_frames})
+    forecast_index_set = set(forecast_indices)
+
+    all_renders = []
+    forecast = []
+    export_total = len(observed_indices) + len(forecast_indices)
+    events.emit("render_export_splats", "running",
+                "Rendering requested view and exporting observed-to-future splat keyframes.",
+                metrics={"total_frames": export_total})
     with torch.inference_mode():
         for index in range(count):
             means = xyz + motion[index]
@@ -162,7 +216,7 @@ def main() -> None:
             opacity = opacity_logits.sigmoid()
             color = (color_logits + temporal_color[index]).sigmoid()
             rgb, _ = _render(means, quats, scale, opacity, color,
-                             target_view, render_camera, width, height)
+                             target_view, render_camera, width, height, background)
             all_renders.append((rgb.cpu().numpy().clip(0, 1) * 255).astype(np.uint8))
             if index in observed_index_set:
                 exported = observed_indices.index(index) + 1
@@ -170,38 +224,41 @@ def main() -> None:
                                 "total": len(observed_indices), "gaussians": len(centers)})
                 save_splat(args.out / f"splat_{index:03d}.splat", means.cpu().numpy(),
                            scale.cpu().numpy(), color.cpu().numpy(), opacity.cpu().numpy(), quats.cpu().numpy())
+                events.emit("render_export_splats", "running",
+                            "Rendering requested view and exporting observed-to-future splat keyframes.",
+                            metrics={"rendered_frames": exported, "total_frames": export_total, "gaussians": len(centers)})
+        for index in range(args.forecast_frames):
+            delta = (index + 1) * settings.fps / args.forecast_fps
+            means = xyz + motion[-1] + velocity * delta
+            scale = log_scales.exp()
+            opacity = opacity_logits.sigmoid()
+            color = (color_logits + temporal_color[-1]).sigmoid()
+            rgb, _ = _render(means, quats, scale, opacity, color, source_view, camera, width, height, background)
+            forecast.append((rgb.cpu().numpy().clip(0, 1) * 255).astype(np.uint8))
+            if index in forecast_index_set:
+                exported = len(observed_indices) + forecast_indices.index(index) + 1
+                write_progress({"phase": "render_forecast_and_export_keyframes", "completed": forecast_indices.index(index) + 1,
+                                "total": len(forecast_indices), "rendered_frames": index + 1,
+                                "forecast_frames": args.forecast_frames, "gaussians": len(centers)})
+                save_splat(args.out / f"forecast_splat_{index:03d}.splat", means.cpu().numpy(),
+                           scale.cpu().numpy(), color.cpu().numpy(), opacity.cpu().numpy(), quats.cpu().numpy())
+                events.emit("render_export_splats", "running",
+                            "Rendering requested view and exporting observed-to-future splat keyframes.",
+                            metrics={"rendered_frames": exported, "total_frames": export_total, "gaussians": len(centers)})
+    events.emit("render_export_splats", "complete",
+                "Rendered requested view and exported every observed-to-future splat keyframe.",
+                metrics={"observed_frames": len(observed_indices), "forecast_frames": len(forecast_indices), "gaussians": len(centers)})
+    events.emit("encode_rendered_video", "running", "Encoding requested-view and forecast videos.")
     write_video(np.stack(all_renders), args.out / "rendered.mp4", settings.fps)
     if args.forecast_frames:
-        fit = min(args.motion_fit_frames, count)
-        times = torch.arange(fit, device=device, dtype=torch.float32)
-        centered = times - times.mean()
-        velocity = (centered[:, None, None] * (motion[-fit:] - motion[-fit:].mean(dim=0))).sum(dim=0) / centered.square().sum().clamp_min(1e-6)
-        forecast = []
-        forecast_indices = (
-            timeline_keyframe_indices(args.forecast_frames, args.forecast_fps, forecast_splat_fps)
-            if forecast_splat_fps else tuple(range(args.forecast_frames))
-        )
-        forecast_index_set = set(forecast_indices)
-        with torch.inference_mode():
-            for index in range(args.forecast_frames):
-                delta = (index + 1) * settings.fps / args.forecast_fps
-                means = xyz + motion[-1] + velocity * delta
-                scale = log_scales.exp()
-                opacity = opacity_logits.sigmoid()
-                color = (color_logits + temporal_color[-1]).sigmoid()
-                rgb, _ = _render(means, quats, scale, opacity, color, source_view, camera, width, height)
-                forecast.append((rgb.cpu().numpy().clip(0, 1) * 255).astype(np.uint8))
-                if index in forecast_index_set:
-                    exported = forecast_indices.index(index) + 1
-                    write_progress({"phase": "render_forecast_and_export_keyframes", "completed": exported,
-                                    "total": len(forecast_indices), "rendered_frames": index + 1,
-                                    "forecast_frames": args.forecast_frames, "gaussians": len(centers)})
-                    save_splat(args.out / f"forecast_splat_{index:03d}.splat", means.cpu().numpy(),
-                               scale.cpu().numpy(), color.cpu().numpy(), opacity.cpu().numpy(), quats.cpu().numpy())
         write_progress({"phase": "encode_forecast_video", "completed": args.forecast_frames,
                         "total": args.forecast_frames, "gaussians": len(centers)})
         write_video(np.stack(forecast), args.out / "forecast.mp4", args.forecast_fps)
         torch.save({"velocity": velocity.cpu(), "frames": args.forecast_frames, "fps": args.forecast_fps}, args.out / "forecast_scene.pt")
+    events.emit("encode_rendered_video", "complete",
+                "Saved requested-view and forecast videos.",
+                metrics={"observed_frames": len(all_renders), "forecast_frames": len(forecast), "fps": settings.fps})
+    events.emit("persist_scene_artifacts", "running", "Writing scene checkpoint and metadata.")
     imageio.imwrite(args.out / "render_000.png", all_renders[0])
     torch.save({
         "means": xyz.detach().cpu(), "log_scales": log_scales.detach().cpu(),
@@ -215,6 +272,7 @@ def main() -> None:
         "frames": count, "source_fov_degrees": args.source_fov, "render_fov_degrees": args.render_fov,
         "limitations": "Single fixed camera; unobserved geometry and absolute scale are uncertain.",
     }, indent=2))
+    events.emit("persist_scene_artifacts", "complete", "Saved scene checkpoint, metadata, and preview.", preview=args.out / "render_000.png", metrics={"gaussians": len(centers), "frames": count})
     print("Native 4D Gaussian scene and video saved", flush=True)
 
 

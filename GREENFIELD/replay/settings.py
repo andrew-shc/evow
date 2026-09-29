@@ -27,6 +27,22 @@ class Settings:
     depth_input_size: int
     gaussian_stride: int
     gaussian_steps: int
+    # Gaussian training and rendering knobs. The defaults reproduce the values
+    # that were previously hardcoded in gaussian_worker.py exactly, so an
+    # untouched CONFIGS/replay.yaml keeps the fitted scene bit-for-bit the same.
+    gaussian_lr_xyz: float
+    gaussian_lr_rotation: float
+    gaussian_lr_scale: float
+    gaussian_lr_color: float
+    gaussian_lr_opacity: float
+    gaussian_lr_motion: float
+    gaussian_loss_depth: float
+    gaussian_loss_smoothness: float
+    gaussian_init_opacity_logit: float
+    gaussian_background_r: float
+    gaussian_background_g: float
+    gaussian_background_b: float
+    anyview_guidance_scale: float
 
 
 @lru_cache(maxsize=1)
@@ -58,4 +74,17 @@ def load_settings() -> Settings:
         depth_input_size=int(config["model"]["depth_input_size"]),
         gaussian_stride=int(config["model"]["gaussian_stride"]),
         gaussian_steps=int(config["model"]["gaussian_steps"]),
+        gaussian_lr_xyz=float(config["model"]["gaussian_lr_xyz"]),
+        gaussian_lr_rotation=float(config["model"]["gaussian_lr_rotation"]),
+        gaussian_lr_scale=float(config["model"]["gaussian_lr_scale"]),
+        gaussian_lr_color=float(config["model"]["gaussian_lr_color"]),
+        gaussian_lr_opacity=float(config["model"]["gaussian_lr_opacity"]),
+        gaussian_lr_motion=float(config["model"]["gaussian_lr_motion"]),
+        gaussian_loss_depth=float(config["model"]["gaussian_loss_depth"]),
+        gaussian_loss_smoothness=float(config["model"]["gaussian_loss_smoothness"]),
+        gaussian_init_opacity_logit=float(config["model"]["gaussian_init_opacity_logit"]),
+        gaussian_background_r=float(config["model"]["gaussian_background_r"]),
+        gaussian_background_g=float(config["model"]["gaussian_background_g"]),
+        gaussian_background_b=float(config["model"]["gaussian_background_b"]),
+        anyview_guidance_scale=float(config["model"]["anyview_guidance_scale"]),
     )

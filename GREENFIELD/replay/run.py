@@ -1,13 +1,14 @@
-"""Coordinate one replay run and expose saved traces to the local interface."""
+"""Coordinate a Replay run and stream its producer-owned trace to Gradio."""
 
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 from uuid import uuid4
 
-from .clip import extract_clip
+from .clip import persist_episode, sample_episode
 from .explicit import run_explicit
 from .implicit import run_implicit
+from .overrides import ReplayOverrides
 from .pose import ViewRequest
 from .settings import load_settings
 from .trace import RunTrace
@@ -27,24 +28,48 @@ def _snapshot(
     message: str,
     video: Path | None = None,
     models: list[Path] | None = None,
-    workflow_changed: bool = True,
 ) -> dict:
     previews = []
     for event in trace.record["events"]:
         if "preview" in event:
             path = run_dir / event["preview"]
             if path.is_file():
-                previews.append((str(path), event["stage"]))
+                # V1 traces recorded a human stage label but had no stable id.
+                # A preview must never make an otherwise valid saved result fail
+                # to open; the workflow renderer will show that record as legacy.
+                stage_id = str(event.get("stage_id") or event.get("stage") or "preview")
+                previews.append((str(path), stage_id))
     return {
         "run_id": run_dir.name,
         "message": message,
         "trace": trace.record,
-        "workflow_changed": workflow_changed,
         "previews": previews,
         "source_video": str(run_dir / "source.mp4") if (run_dir / "source.mp4").is_file() else None,
         "video": str(video) if video else None,
         "models": [str(path) for path in (models or [])],
     }
+
+
+def _title(stage_id: str) -> str:
+    """Keep raw trace events readable while workflow specs own visible labels."""
+    return stage_id.replace("_", " ").title()
+
+
+def _add_update(trace: RunTrace, update: dict) -> None:
+    """Forward one worker/coordinator event without collapsing its stable id."""
+    stage_id = str(update["stage_id"])
+    preview = Path(update["preview"]) if update.get("preview") else None
+    log_path = Path(update["log_path"]) if update.get("log_path") else None
+    trace.add(
+        str(update.get("stage", _title(stage_id))),
+        str(update["status"]),
+        str(update["detail"]),
+        preview,
+        update.get("metrics"),
+        stage_id=stage_id,
+        execution=str(update.get("execution", "serial")),
+        log_path=log_path,
+    )
 
 
 def execute_run(
@@ -56,8 +81,12 @@ def execute_run(
     yaw_degrees: float,
     lateral_shift: float,
     fov_degrees: float,
+    overrides: ReplayOverrides | None = None,
 ):
-    settings = load_settings()
+    """Yield display snapshots after each real serial pipeline transition."""
+    if overrides is not None:
+        overrides.validate()
+    settings = overrides.apply(load_settings()) if overrides is not None else load_settings()
     if mode not in ("implicit", "explicit"):
         raise ValueError("Choose Implicit video or Explicit 3D.")
     if frame_count not in (13, 29, 41):
@@ -66,38 +95,58 @@ def execute_run(
         raise ValueError("Choose a source camera field of view between 35 and 110 degrees.")
     request = ViewRequest(yaw_degrees, lateral_shift, fov_degrees)
     request.validate()
-    run_dir = _run_directory()
-    trace = RunTrace(
-        run_dir, mode,
-        {
-            "source_name": Path(video_path).name if video_path else None,
-            "start_seconds": start_seconds,
-            "frame_count": frame_count,
-            "fps": settings.fps,
-            "source_fov_degrees": source_fov_degrees,
-            "yaw_degrees": yaw_degrees,
-            "lateral_shift_scene_units": lateral_shift,
-            "fov_degrees": fov_degrees,
-        },
-    )
 
-    # This is updated before every backend event. If an operation raises, the
-    # trace can mark the stage users saw running rather than only a generic run.
-    active_stage = "Input clip"
+    run_dir = _run_directory()
+    traced_request = {
+        "source_name": Path(video_path).name if video_path else None,
+        "start_seconds": start_seconds,
+        "frame_count": frame_count,
+        "fps": settings.fps,
+        "source_fov_degrees": source_fov_degrees,
+        "yaw_degrees": yaw_degrees,
+        "lateral_shift_scene_units": lateral_shift,
+        "fov_degrees": fov_degrees,
+        "effective_settings": ReplayOverrides.from_settings(settings).as_dict(),
+    }
+    trace = RunTrace(run_dir, mode, traced_request)
+    active_stage = "validate_request"
     try:
-        trace.add("Input clip", "running", "Decoding the requested stationary-view episode.")
-        yield _snapshot(run_dir, trace, "Preparing input clip.")
-        frames = extract_clip(video_path, start_seconds, frame_count, settings, run_dir)
+        _add_update(trace, {
+            "stage_id": "validate_request", "status": "running",
+            "detail": "Checking request and reconstruction settings.",
+        })
+        _add_update(trace, {
+            "stage_id": "validate_request", "status": "complete",
+            "detail": "Request is valid.",
+        })
+
+        active_stage = "sample_episode"
+        _add_update(trace, {
+            "stage": "Input clip", "stage_id": active_stage, "status": "running",
+            "detail": "Decoding and sampling the fixed-camera episode.",
+        })
+        yield _snapshot(run_dir, trace, "Sampling input episode.")
+        frames = sample_episode(video_path, start_seconds, frame_count, settings)
+        _add_update(trace, {
+            "stage": "Input clip", "stage_id": active_stage, "status": "complete",
+            "detail": "Decoded the requested RGB episode.",
+            "metrics": {"frames": frame_count, "fps": settings.fps},
+        })
+
+        active_stage = "persist_source"
+        _add_update(trace, {
+            "stage_id": active_stage, "status": "running",
+            "detail": "Writing source frames, preview, and browser clip.",
+        })
+        yield _snapshot(run_dir, trace, "Persisting input episode.")
+        persist_episode(frames, settings, run_dir)
         trace.update_request({"stationary_view_assumed": True})
-        trace.add(
-            "Input clip", "complete", "Sampled the same short stationary-view episode for both methods.",
-            run_dir / "source.png",
-            {"frames": frame_count, "fps": settings.fps, "stationary_view_assumed": True},
-        )
-        yield _snapshot(run_dir, trace, "Input clip ready.")
-        # A whole HTML replacement collapses every native <details> card. Only
-        # refresh it when the visible stage or its status changes.
-        last_workflow_state = ("Input clip", "complete")
+        _add_update(trace, {
+            "stage_id": active_stage, "status": "complete",
+            "detail": "Saved source artifacts.", "preview": run_dir / "source.png",
+            "metrics": {"frames": frame_count, "fps": settings.fps, "stationary_view_assumed": True},
+        })
+        yield _snapshot(run_dir, trace, "Input episode ready.")
 
         backend = (
             run_implicit(frames, request, source_fov_degrees, run_dir, settings)
@@ -110,22 +159,16 @@ def execute_run(
             except StopIteration as finished:
                 result = finished.value
                 break
-            workflow_changed = False
-            if update.get("record", True):
-                active_stage = update["stage"]
-                trace.add(
-                    update["stage"], update["status"], update["detail"],
-                    update.get("preview"), update.get("metrics"),
-                )
-                workflow_state = (update["stage"], update["status"])
-                workflow_changed = workflow_state != last_workflow_state
-                last_workflow_state = workflow_state
-            yield _snapshot(
-                run_dir, trace, update["detail"], workflow_changed=workflow_changed,
-            )
+            active_stage = str(update["stage_id"])
+            _add_update(trace, update)
+            yield _snapshot(run_dir, trace, str(update["detail"]))
 
-        # Saving the final manifest is itself the last visible workflow stage.
-        active_stage = "Run complete"
+        active_stage = "save_run_manifest"
+        _add_update(trace, {
+            "stage_id": active_stage, "status": "running",
+            "detail": "Writing the result manifest and final trace.",
+        })
+        yield _snapshot(run_dir, trace, "Saving run manifest.")
         video = Path(result["video"])
         models = list(result["models"])
         (run_dir / "result.json").write_text(json.dumps({
@@ -133,13 +176,20 @@ def execute_run(
             "video": str(video.relative_to(run_dir)),
             "models": [str(path.relative_to(run_dir)) for path in models],
         }, indent=2))
-        trace.add("Run complete", "complete", "The result and stage trace are saved.")
+        _add_update(trace, {
+            "stage_id": active_stage, "status": "complete",
+            "detail": "Saved result and execution trace.",
+        })
         yield _snapshot(run_dir, trace, "Run complete.", video, models)
     except Exception as error:
-        # Preserve the generic terminal record for tooling while giving the UI a
-        # stage-specific failure that it can render in the appropriate band.
-        trace.add(active_stage, "error", str(error))
-        trace.add("Run failed", "error", str(error))
+        # The active producer stage, not a generic catch-all row, owns failure.
+        events = trace.record["events"]
+        latest = next((event for event in reversed(events) if event["stage_id"] == active_stage), None)
+        if latest and latest["status"] == "running":
+            _add_update(trace, {
+                "stage": latest["stage"], "stage_id": active_stage, "status": "error",
+                "detail": str(error), "log_path": run_dir / latest["log_path"] if latest.get("log_path") else None,
+            })
         yield _snapshot(run_dir, trace, f"Run failed: {error}")
 
 
@@ -154,8 +204,7 @@ def list_saved_runs() -> list[tuple[str, str]]:
             continue
         source_name = trace["request"].get("source_name") or "recording"
         method = "Explicit 4D Gaussian" if result["mode"] == "explicit" else "Implicit video diffusion"
-        label = f"{method} · {source_name} · {run_dir.name}"
-        choices.append((label, run_dir.name))
+        choices.append((f"{method} · {source_name} · {run_dir.name}", run_dir.name))
     return choices
 
 

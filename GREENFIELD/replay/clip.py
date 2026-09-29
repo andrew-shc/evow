@@ -1,4 +1,4 @@
-"""Extract a short, timestamped RGB clip and write browser-playable video."""
+"""Extract a short, timestamped RGB clip and persist browser-playable artifacts."""
 
 import math
 from pathlib import Path
@@ -10,13 +10,13 @@ import numpy as np
 from .settings import Settings
 
 
-def extract_clip(
+def sample_episode(
     video_path: str,
     start_seconds: float,
     frame_count: int,
     settings: Settings,
-    run_dir: Path,
 ) -> np.ndarray:
+    """Decode, sample, resize, and RGB-convert the requested source episode."""
     if not video_path or not Path(video_path).is_file():
         raise ValueError("Upload or record a video before starting a run.")
     if start_seconds < 0:
@@ -35,8 +35,8 @@ def extract_clip(
         frames = []
         source_index = start_frame
         last_frame = None
-        for i in range(frame_count):
-            target_index = start_frame + round(i * source_fps / settings.fps)
+        for index in range(frame_count):
+            target_index = start_frame + round(index * source_fps / settings.fps)
             while source_index <= target_index:
                 ok, last_frame = capture.read()
                 if not ok:
@@ -53,16 +53,31 @@ def extract_clip(
             frames.append(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
     finally:
         capture.release()
+    return np.stack(frames, axis=0)
 
-    stacked = np.stack(frames, axis=0)
-    np.save(run_dir / "frames.npy", stacked)
-    write_video(stacked, run_dir / "source.mp4", settings.fps)
-    imageio.imwrite(run_dir / "source.png", stacked[0])
-    return stacked
+
+def persist_episode(frames: np.ndarray, settings: Settings, run_dir: Path) -> None:
+    """Write the array, browser source clip, and first-frame preview together."""
+    np.save(run_dir / "frames.npy", frames)
+    write_video(frames, run_dir / "source.mp4", settings.fps)
+    imageio.imwrite(run_dir / "source.png", frames[0])
+
+
+def extract_clip(
+    video_path: str,
+    start_seconds: float,
+    frame_count: int,
+    settings: Settings,
+    run_dir: Path,
+) -> np.ndarray:
+    """Backward-compatible convenience wrapper for non-streaming callers."""
+    frames = sample_episode(video_path, start_seconds, frame_count, settings)
+    persist_episode(frames, settings, run_dir)
+    return frames
 
 
 def write_video(frames: np.ndarray, path: Path, fps: int) -> None:
-    # H.264/yuv420p is playable in the browser. Input dimensions are even.
+    """Encode even-dimension RGB frames as browser-playable H.264 video."""
     with imageio.get_writer(
         path, fps=fps, codec="libx264", quality=8, macro_block_size=1,
     ) as writer:

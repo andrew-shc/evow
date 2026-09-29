@@ -8,6 +8,8 @@ from typing import Any
 from uuid import uuid4
 
 from .contracts import ClipArtifact, FeatureResult, RunArtifacts, StageEvent
+from .flow import LEGACY_FLOW_VERSION, normalize_stage_id
+from .timing import round_stopwatch
 
 
 MANIFEST_VERSION = 1
@@ -16,7 +18,16 @@ MANIFEST_VERSION = 1
 class FeatureTrace:
     """Persist one feature invocation without exposing partially written JSON."""
 
-    def __init__(self, root: Path, feature: str, mode: str, request: dict[str, Any]):
+    def __init__(
+        self,
+        root: Path,
+        feature: str,
+        mode: str,
+        request: dict[str, Any],
+        *,
+        flow_version: int = LEGACY_FLOW_VERSION,
+        profile_id: str = "",
+    ):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.run_dir = (root / feature / "runs" / f"{stamp}_{uuid4().hex[:8]}").resolve()
         self.run_dir.mkdir(parents=True, exist_ok=False)
@@ -27,6 +38,13 @@ class FeatureTrace:
         self._stage_started: dict[str, float] = {}
         self.record: dict[str, Any] = {
             "manifest_version": MANIFEST_VERSION,
+            # ``flow_version``/``profile_id`` identify the ordered stage profile
+            # independently of the storage schema (``manifest_version``). They
+            # are persisted so a saved run is never reinterpreted against a
+            # newer profile, and ``profile_id`` is the human-readable form of
+            # the same identity.
+            "flow_version": flow_version,
+            "profile_id": profile_id,
             "run_id": self.run_dir.name,
             "feature": feature,
             "mode": mode,
@@ -54,6 +72,10 @@ class FeatureTrace:
         record = json.loads((run_dir / "trace.json").read_text())
         if record.get("feature") != feature or record.get("result") is not None:
             raise ValueError("That run is unavailable for confirmation.")
+        # A prepared run written before flow versioning is still resumable: it
+        # keeps its legacy identity and gains the fields on its next save.
+        record.setdefault("flow_version", LEGACY_FLOW_VERSION)
+        record.setdefault("profile_id", "")
         instance = cls.__new__(cls)
         instance.run_dir = run_dir
         elapsed = max((float(event.get("elapsed_seconds", 0)) for event in record.get("events", [])), default=0.0)
@@ -72,12 +94,17 @@ class FeatureTrace:
         stage_started = self._stage_started.setdefault(event.stage, now)
         item: dict[str, Any] = {
             "stage": event.stage,
+            # Persist the stable identity separately from the display label so a
+            # saved run resolves against its stage profile even after the label
+            # is renamed. Legacy adapters leave ``stage_id`` empty and fall back
+            # to the name they already emit.
+            "stage_id": normalize_stage_id(event.stage_id, event.stage),
             "status": event.status,
             "detail": event.detail,
             # Retain the total for existing saved-run consumers, but persist
             # the stage-local value so renderers do not need to infer it.
-            "elapsed_seconds": round(now - self.started, 2),
-            "stage_elapsed_seconds": round(now - stage_started, 2),
+            "elapsed_seconds": round_stopwatch(now - self.started),
+            "stage_elapsed_seconds": round_stopwatch(now - stage_started),
         }
         if event.preview:
             item["preview"] = str(event.preview.relative_to(self.run_dir))
@@ -137,6 +164,10 @@ def load_trace(run_dir: Path) -> dict[str, Any]:
     record.setdefault("manifest_version", 0)
     record.setdefault("feature", "replay")
     record.setdefault("result", None)
+    # A record without a flow identity predates stage versioning: resolve it as
+    # the legacy (name-only) profile rather than guessing a newer one.
+    record.setdefault("flow_version", LEGACY_FLOW_VERSION)
+    record.setdefault("profile_id", "")
     if isinstance(record["result"], dict):
         # Pre-clip traces remain loadable after the typed result extension.
         record["result"].setdefault("clips", [])

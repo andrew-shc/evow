@@ -26,6 +26,12 @@ class TextSettings:
     query_result_fps: float
     query_max_results: int
     query_explicit_candidate_pool: int
+    # Grounding DINO's confidence threshold and the projected-mask coverage that
+    # marks a grounded region as low-spatial-specificity. Both were previously
+    # module constants; moving them here lets Text Query override them per run
+    # while these defaults reproduce the old hardcoded values exactly.
+    grounding_threshold: float
+    low_specificity_coverage: float
     episode_fps: int
     episode_max_frames: int
     source_fov_degrees: float
@@ -33,6 +39,12 @@ class TextSettings:
     edit_max_side: int
     edit_max_height: int
     vace_steps: int
+    # Wan VACE's classifier-free guidance and the dilation applied to the
+    # resolved edit mask before conditioning. Exposing both lets an owner trade
+    # prompt adherence and boundary blending while the defaults (5.0 and 5)
+    # reproduce the previously hardcoded edit path exactly.
+    vace_guidance_scale: float
+    edit_mask_expand_px: int
 
     @property
     def episode_seconds(self) -> float:
@@ -69,6 +81,8 @@ def load_text_settings() -> TextSettings:
         query_result_fps=float(runtime["query_result_fps"]),
         query_max_results=int(runtime["query_max_results"]),
         query_explicit_candidate_pool=int(runtime["query_explicit_candidate_pool"]),
+        grounding_threshold=float(runtime["text_grounding_threshold"]),
+        low_specificity_coverage=float(runtime["text_low_specificity_coverage"]),
         episode_fps=int(runtime["text_episode_fps"]),
         episode_max_frames=int(runtime["text_episode_max_frames"]),
         source_fov_degrees=float(runtime["text_source_fov_degrees"]),
@@ -76,4 +90,6 @@ def load_text_settings() -> TextSettings:
         edit_max_side=int(runtime["text_edit_max_side"]),
         edit_max_height=int(runtime["text_edit_max_height"]),
         vace_steps=int(runtime["text_vace_steps"]),
+        vace_guidance_scale=float(runtime["text_vace_guidance_scale"]),
+        edit_mask_expand_px=int(runtime["text_edit_mask_expand_px"]),
     )

@@ -20,3 +20,8 @@ The setup command loads `HF_TOKEN` from the environment or `.env` without printi
 ## Explicit 3D cache
 
 The explicit modes reuse the replay depth and dynamic-Gaussian workers for only the ranked/query-selected episode. Complete scenes are atomically cached under `ASSETS/scenes/`, keyed by source SHA-256, temporal bounds, cadence, source FOV, and reconstruction settings. Query highlights are rerendered from selected Gaussian primitive IDs. Explicit edits use that projected mask for VACE, then fit a generated descendant scene; copied `.splat` timeline files live in the edit run so saved viewers remain replayable if the shared cache is later pruned.
+
+
+## Future View self-trained implicit method
+
+Future View offers three methods: **Explicit 3D**, **Implicit 3D [prior]**, and **Implicit 3D [self-trained]**. The self-trained method is run by Generate, not by a separate training control: it hashes the selected source, samples only its pre-holdout portion, fits or reuses a local Stable Video Diffusion LoRA under `ASSETS/future/training/`, then forecasts from the final untouched history window. Adaptation is capped at a 512-pixel long edge so the full 14-frame backward pass fits the 24 GB owner GPU; this does not lower forecast resolution. Its artifact is reused only when the source bytes and relevant settings fingerprint match. The owner must install `peft` from `CONFIGS/replay_requirements.txt` after updating dependencies.

@@ -84,15 +84,21 @@ def test_grounding_success_and_no_match_are_explicit(monkeypatch) -> None:
     box = GroundedBox((4, 4, 20, 18), 0.9)
     tracked = np.zeros((3, 24, 32), dtype=bool)
     tracked[:, 4:18, 4:20] = True
-    monkeypatch.setattr(text_segmentation, "ground_query", lambda _frame, _query: box)
-    monkeypatch.setattr(text_segmentation, "track_box", lambda _frames, _box, _anchor: tracked)
+    monkeypatch.setattr(text_segmentation, "ground_query", lambda _frame, _query, _threshold=0.25: box)
+
+    def fake_track_steps(_frames, _box, _anchor, **_kwargs):
+        if False:
+            yield
+        return tracked
+
+    monkeypatch.setattr(text_segmentation, "track_box_steps", fake_track_steps)
 
     success = text_segmentation.ground_and_track(frames, "tree")
     assert success is not None
     assert success.box == box
     assert success.masks.any()
 
-    monkeypatch.setattr(text_segmentation, "ground_query", lambda _frame, _query: None)
+    monkeypatch.setattr(text_segmentation, "ground_query", lambda _frame, _query, _threshold=0.25: None)
     assert text_segmentation.ground_and_track(frames, "not present") is None
 
 
@@ -158,7 +164,7 @@ def test_vace_mask_polarity_uses_white_for_generated_pixels(monkeypatch) -> None
 
     monkeypatch.setattr(
         video_edit, "load_text_settings",
-        lambda: SimpleNamespace(edit_max_side=64, edit_max_height=64, vace_steps=1),
+        lambda: SimpleNamespace(edit_max_side=64, edit_max_height=64, vace_steps=1, vace_guidance_scale=5.0),
     )
     monkeypatch.setattr(video_edit, "vace_pipeline", lambda: FakePipeline())
     monkeypatch.setattr(video_edit, "device", lambda: "cpu")

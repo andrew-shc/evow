@@ -4,7 +4,7 @@
 
 One fixed camera records a sky-and-trees view continuously. The application makes a one-month archive available for text selection, 3D replay, future views, and text editing. Each feature has an implicit video-based mode and an explicit mode that uses a persistent 3D scene. These are eight working modes of one application.
 
-Each feature page displays one mode at a time. A mode switch selects **Implicit** or **Explicit 3D**. A separate **Show internals** toggle on each mode reveals the source material, visual stages, progress, stage timings, and final result. Switching modes keeps the selected clip, query, prompt, viewpoint, or forecast horizon so the two results can be viewed against the same request.
+Each feature page displays one mode at a time. A mode switch selects **Implicit** or **Explicit 3D**. A separate **Internal Execution Flow** toggle on each mode reveals the source material, visual stages, progress, stage timings, and final result. Switching modes keeps the selected clip, query, prompt, viewpoint, or forecast horizon so the two results can be viewed against the same request.
 
 The owner's private dashboard starts runs on demand and updates their stages while they execute. Runs share one workstation and enter a queue; recording continues independently. Every run saves a trace that the owner can replay. The public application offers the same feature and internals controls over curated recorded traces. Its controls scrub saved stages and results; they do not trigger a run or reveal the live camera.
 

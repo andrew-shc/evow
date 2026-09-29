@@ -10,7 +10,7 @@ Make a view observed by one camera around the clock explorable: revisit recorded
 
 - The application has four features: 3D video / 4D replay, future view, text selection from the archive, and text editing of 3D video.
 - Every feature has two usable modes, for eight modes total. The implicit mode works through video-based generation or understanding. The explicit mode works through a persistent 3D scene representation, such as a mesh or Gaussian splats.
-- A feature page shows one mode at a time. Each mode has a **Show internals** toggle for its input, visual processing stages, progress, timings, and result.
+- A feature page shows one mode at a time. Each mode has an **Internal Execution Flow** toggle for its input, visual processing stages, progress, timings, and result.
 - The owner starts runs on demand and sees their stages live. Public visitors explore curated, interactive recordings of completed runs through the same feature pages. Public visitors do not start processing jobs or see the live camera.
 - **Methodology invariant:** every feature presents the same two solution families in this order: **Explicit 3D** first, then **Implicit 3D**. Feature-specific words follow the colon; never replace the shared 3D terminology with a different primary label.
 - The camera supplies the only visual input. Forecasts may also use date and time. Show a 30-second continuation and a possible view two hours ahead. Text editing covers scene content as well as weather and lighting.

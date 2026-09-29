@@ -179,6 +179,7 @@ async function preloadGroup(paths) {{
   }});
   const resizeObserver = new ResizeObserver(redrawForSize);
   resizeObserver.observe(element); redrawForSize();
+  return {{ viewer, element, visibleFrame: 0 }};
 }}
 
 timeline.addEventListener('input', () => {{ stop(); setTime(timeline.value); }});
@@ -215,7 +216,9 @@ play.addEventListener('click', () => {{
 def empty_splat_html() -> str:
     """Keep the 3D panel visibly reserved before an explicit run creates a scene."""
     return (
-        '<div style="height:480px;display:grid;place-items:center;border:2px solid #58748d;'
-        'border-radius:10px;background:#101b27;color:#e8f0f5;font:15px system-ui">'
+        '<div style="height:480px;display:grid;place-items:center;'
+        'border:2px solid #58748d;border-radius:10px;background:#101b27;'
+        'color:#ffffff;font:15px system-ui">'
+        "An Explicit 3D scene will appear here after the run completes."
         "</div>"
     )

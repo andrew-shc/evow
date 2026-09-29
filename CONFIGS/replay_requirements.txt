@@ -19,6 +19,7 @@ diffusers==0.35.1
 transformers==4.57.1
 accelerate==1.10.1
 huggingface-hub==0.34.4
+peft>=0.17,<0.19
 faiss-cpu==1.12.0
 # Wan VACE's UMT5 tokenizer needs SentencePiece even when it happens to be
 # present transitively in an existing development environment.

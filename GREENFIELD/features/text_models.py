@@ -2,10 +2,11 @@
 
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterator
+from typing import Iterator, Mapping
 
 import numpy as np
 
+from GREENFIELD.app_core.contracts import StageEvent
 from GREENFIELD.app_core.models import require_checkpoint, require_package
 from .text_settings import load_text_settings
 
@@ -68,36 +69,91 @@ def siglip_model():
     return processor, model
 
 
-def semantic_scores_steps(frames: list[np.ndarray], query: str) -> Iterator[tuple[int, int]]:
-    """Yield retrieval progress and return one normalized score per source frame."""
-    if not frames:
-        raise ValueError("Text retrieval needs at least one source frame.")
+def semantic_scores_steps(frames: list[np.ndarray], query: str, *, stage_ids: Mapping[str, str]) -> Iterator[StageEvent]:
+    """Yield Text Query's atomic retrieval stages and return one score per frame.
+
+    ``stage_ids`` maps this feature's stable flow identities onto the six
+    retrieval sub-stages (``siglip_load``, ``text_embed``, ``frame_embed``,
+    ``normalize``, ``faiss_index``, ``faiss_search``), so the caller's declared
+    flow owns the ids and this model adapter stays feature-agnostic. Every metric
+    is a fact measured here: the checkpoint/device actually loaded, the embedding
+    width, the real frame count, and the FAISS match count/best score. An empty
+    frame list still emits ``running`` then ``complete`` for ``frame_embed`` with
+    ``total_frames=0`` so the row is never left dangling.
+    """
     require_package("faiss", "models")
     import faiss
     import torch
 
+    settings = load_text_settings()
+    checkpoint = str(settings.semantic_checkpoint)
+    yield StageEvent("Load local SigLIP", "running", "Loading the owner-installed SigLIP processor and weights.", stage_id=stage_ids["siglip_load"])
     processor, model = siglip_model()
+    inference_device = device()
+    yield StageEvent(
+        "Load local SigLIP", "complete", f"Loaded local SigLIP on {inference_device}.",
+        metrics={"checkpoint": checkpoint, "device": inference_device}, stage_id=stage_ids["siglip_load"],
+    )
     with torch.inference_mode():
+        yield StageEvent("Embed query text", "running", "Encoding the query text with SigLIP.", stage_id=stage_ids["text_embed"])
         text = model.get_text_features(
             **_inputs_for_model(processor(text=[query], padding="max_length", return_tensors="pt"), model)
         ).cpu().numpy().astype(np.float32)
+        yield StageEvent(
+            "Embed query text", "complete", "Encoded the query into one normalized SigLIP embedding.",
+            metrics={"dimensions": int(text.shape[1])}, stage_id=stage_ids["text_embed"],
+        )
+        yield StageEvent(
+            "Embed source frames", "running", f"Embedding sampled source frames · 0/{len(frames)}.",
+            metrics={"embedded_frames": 0, "total_frames": len(frames)}, stage_id=stage_ids["frame_embed"],
+        )
         vectors = []
         for completed, frame in enumerate(frames, 1):
             vector = model.get_image_features(
                 **_inputs_for_model(processor(images=frame, return_tensors="pt"), model)
             ).cpu().numpy()[0]
             vectors.append(vector)
-            yield completed, len(frames)
-    matrix = np.asarray(vectors, dtype=np.float32)
+            yield StageEvent(
+                "Embed source frames", "running", f"Embedding sampled source frames · {completed}/{len(frames)}.",
+                metrics={"embedded_frames": completed, "total_frames": len(frames)}, stage_id=stage_ids["frame_embed"],
+            )
+        yield StageEvent(
+            "Embed source frames", "complete", f"Embedded all {len(frames)} sampled source frames.",
+            metrics={"embedded_frames": len(frames), "total_frames": len(frames)}, stage_id=stage_ids["frame_embed"],
+        )
+    dimensions = int(text.shape[1])
+    matrix = np.asarray(vectors, dtype=np.float32) if vectors else np.empty((0, dimensions), dtype=np.float32)
+    yield StageEvent("Normalize embeddings", "running", "L2-normalizing the image and text embeddings.", stage_id=stage_ids["normalize"])
     matrix /= np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
     text /= np.maximum(np.linalg.norm(text, axis=1, keepdims=True), 1e-12)
+    yield StageEvent(
+        "Normalize embeddings", "complete", f"Normalized {matrix.shape[0]} image vectors and the text vector.",
+        metrics={"vectors": int(matrix.shape[0]), "dimensions": dimensions}, stage_id=stage_ids["normalize"],
+    )
     # Keep FAISS as the local query index even for small single-video searches;
     # it makes the same contract scale to later archive ingestion.
-    index = faiss.IndexFlatIP(matrix.shape[1])
+    yield StageEvent("Build local FAISS index", "running", "Building an inner-product index over the frame embeddings.", stage_id=stage_ids["faiss_index"])
+    index = faiss.IndexFlatIP(dimensions)
     index.add(matrix)
-    ranked_scores, ranked_indices = index.search(text, len(matrix))
-    scores = np.empty(len(matrix), dtype=np.float32)
-    scores[ranked_indices[0]] = ranked_scores[0]
+    yield StageEvent(
+        "Build local FAISS index", "complete", f"Indexed {matrix.shape[0]} frame embeddings.",
+        metrics={"vectors": int(matrix.shape[0]), "dimensions": dimensions}, stage_id=stage_ids["faiss_index"],
+    )
+    yield StageEvent("Search FAISS index", "running", "Scoring every frame against the query embedding.", stage_id=stage_ids["faiss_search"])
+    if len(matrix):
+        ranked_scores, ranked_indices = index.search(text, len(matrix))
+        scores = np.empty(len(matrix), dtype=np.float32)
+        scores[ranked_indices[0]] = ranked_scores[0]
+        matches, best_score = int(len(matrix)), float(ranked_scores[0][0])
+    else:
+        # No sampled frames: report the honest zero-match result instead of
+        # fabricating a score, and let ranked_windows reject the empty input.
+        scores = np.empty(0, dtype=np.float32)
+        matches, best_score = 0, None
+    yield StageEvent(
+        "Search FAISS index", "complete", f"Scored {matches} frame embeddings against the query.",
+        metrics={"matches": matches, "best_score": best_score}, stage_id=stage_ids["faiss_search"],
+    )
     return scores
 
 
